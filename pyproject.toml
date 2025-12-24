@@ -7,5 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "ncatbot",
 ]
-[tool.uv]
-index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"

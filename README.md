@@ -50,9 +50,8 @@ python main.py
 
 ## 内置功能
 
-- `ping` - 回复 pong
-- `/hello` - 问候
-- `/help` - 帮助信息
+- `/status` - 查询服务器状态（CPU、内存、Swap、磁盘、运行时间）
+- `/help` - 显示所有可用命令
 
 ## License
 

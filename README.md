@@ -42,7 +42,9 @@ python main.py
 ├── config.yaml          # 配置文件 (git ignored)
 ├── config.yaml.example  # 配置模板
 ├── plugins/             # 插件目录
-│   └── hello_plugin/    # 示例插件
+│   ├── status.py        # 服务器状态查询
+│   └── help.py          # 帮助命令
+├── 37bot.service        # systemd 服务配置
 └── start-napcat.sh      # NapCat Docker 启动脚本
 ```
 

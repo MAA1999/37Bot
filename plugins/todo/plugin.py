@@ -7,6 +7,7 @@ from typing import Optional
 
 from ncatbot.plugin_system import NcatBotPlugin, command_registry, param
 from ncatbot.core.event import GroupMessageEvent
+from ncatbot.core.event.message_segment import Reply
 from ncatbot.core.helper import ForwardConstructor
 from ncatbot.utils import get_log
 
@@ -72,7 +73,7 @@ class TodoPlugin(NcatBotPlugin):
         reply_msg_id = None
         if hasattr(event, 'message') and event.message:
             for seg in event.message:
-                if hasattr(seg, 'type') and seg.type == 'reply':
+                if isinstance(seg, Reply):
                     reply_msg_id = seg.id
                     break
 

@@ -16,6 +16,7 @@ class HelpPlugin(NcatBotPlugin):
         "help": "帮助",
         "status": "状态",
         "mirrorchyan": "Mirror酱",
+        "groupadmin": "群管",
     }
 
     def _get_plugin_display_name(self, plugin_name: str) -> str:

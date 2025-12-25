@@ -210,5 +210,6 @@ __marimo__/
 napcat/
 data/
 config.yaml
+.vscode/sftp.json
 
 docs/

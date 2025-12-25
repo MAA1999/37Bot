@@ -297,7 +297,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         self.config.subscriptions.append(sub)
         return sub
 
-    @command_registry.command("mirror_sub", description="订阅资源 <rid> --type=0/1 --channel= --interval=秒 --auto=true/false")
+    @command_registry.command("mirror_sub", description="[管理员] 订阅资源")
     @param(name="type", default=1, help="类型 0通用/1跨平台")
     @param(name="channel", default="stable", help="渠道 stable/beta/alpha")
     @param(name="interval", default=600, help="检查间隔(秒)")
@@ -360,7 +360,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             f"订阅成功: {rid} ({type_name}, {channel}, {interval}s, 自动上传:{auto_str})"
         )
 
-    @command_registry.command("mirror_unsub", description="取消订阅 <rid> --type=0/1")
+    @command_registry.command("mirror_unsub", description="[管理员] 取消订阅")
     @param(name="type", default=1, help="类型 0通用/1跨平台")
     async def cmd_unsub(
         self, event: GroupMessageEvent, rid: str, type: int = 0
@@ -383,7 +383,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
                         return
         await event.reply(f"未找到订阅: {rid}")
 
-    @command_registry.command("mirror_list", description="查看本群订阅列表")
+    @command_registry.command("mirror_list", description="查看本群订阅")
     async def cmd_list(self, event: GroupMessageEvent):
         """查看订阅列表"""
         group_id = str(event.group_id)
@@ -397,7 +397,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
                 return
         await event.reply("本群暂无订阅")
 
-    @command_registry.command("mirror_check", description="立即检查更新 [rid] --force强制显示")
+    @command_registry.command("mirror_check", description="[管理员] 立即检查更新")
     @param(name="rid", default=None, help="资源ID，不填则检查全部")
     @param(name="force", default=False, help="强制显示更新信息")
     async def cmd_check(self, event: GroupMessageEvent, rid: str = None, force: bool = False):
@@ -424,7 +424,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
                 return
         await event.reply("本群暂无订阅")
 
-    @command_registry.command("mirror_config", description="修改配置 <rid> --type=0/1 --interval=秒 --auto=true/false --channel=渠道")
+    @command_registry.command("mirror_config", description="[管理员] 修改订阅配置")
     @param(name="type", default=0, help="资源类型 0通用/1跨平台")
     @param(name="interval", default=None, help="检查间隔(秒)")
     @param(name="auto", default=None, help="自动上传 true/false")
@@ -478,7 +478,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
                         return
         await event.reply(f"未找到订阅: {rid}")
 
-    @command_registry.command("mirror_download", description="下载资源到群文件 <rid> --type=0/1 --channel=")
+    @command_registry.command("mirror_download", description="[管理员] 下载资源到群文件")
     @param(name="type", default=1, help="类型 0通用/1跨平台")
     @param(name="channel", default="stable", help="渠道 stable/beta/alpha")
     async def cmd_download(
@@ -545,7 +545,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
     # ========== 私聊命令 ==========
 
-    @command_registry.command("mirror_cdk", description="设置CDK密钥(私聊/root) <CDK>")
+    @command_registry.command("mirror_cdk", description="[root] 设置CDK密钥(私聊)")
     async def cmd_cdk(self, event: PrivateMessageEvent, cdk: str):
         """设置CDK"""
         # 只允许私聊

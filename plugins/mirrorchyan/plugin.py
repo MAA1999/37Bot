@@ -23,8 +23,8 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
     async def on_load(self):
         """插件加载"""
-        self.data_dir = Path(f"data/{self.name}")
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # 使用框架提供的 workspace 目录
+        self.data_dir = self.workspace
         self.config_path = self.data_dir / "config.json"
         self.state_path = self.data_dir / "state.json"
 

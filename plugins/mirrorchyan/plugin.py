@@ -284,7 +284,8 @@ class MirrorChyanPlugin(NcatBotPlugin):
             await self.api.upload_group_file(group_id, save_path, upload_name, folder=folder_id)
             await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}")
         except Exception as e:
-            await self.api.post_group_msg(group_id, text=f"自动上传失败: {e}")
+            err_msg = str(e) or repr(e)
+            await self.api.post_group_msg(group_id, text=f"自动上传失败: {type(e).__name__}: {err_msg}")
 
     # ========== 群聊命令 ==========
 

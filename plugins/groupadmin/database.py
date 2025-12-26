@@ -79,8 +79,11 @@ class MemberDB:
             conn.execute(
                 """
                 UPDATE members SET leave_time = ?, leave_type = ?
-                WHERE user_id = ? AND group_id = ? AND leave_time IS NULL
-                ORDER BY join_time DESC LIMIT 1
+                WHERE id = (
+                    SELECT id FROM members
+                    WHERE user_id = ? AND group_id = ? AND leave_time IS NULL
+                    ORDER BY join_time DESC LIMIT 1
+                )
                 """,
                 (leave_time, leave_type, user_id, group_id),
             )

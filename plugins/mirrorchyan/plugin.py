@@ -28,7 +28,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         self.config_path = self.data_dir / "config.json"
         self.state_path = self.data_dir / "state.json"
 
-        self.config = self._load_config()
+        self.mirror_config = self._load_config()
         self.state = self._load_state()  # {rid: last_version}
 
         # 启动定时检查
@@ -47,7 +47,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
     def _start_check_tasks(self):
         """启动所有订阅的定时检查任务"""
-        for sub in self.config.subscriptions:
+        for sub in self.mirror_config.subscriptions:
             for res in sub.resources:
                 task_name = (
                     f"mirror_{sub.group_id}_{res.rid}_{res.type}"
@@ -78,7 +78,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         return MirrorConfig()
 
     def _save_config(self):
-        data = self._config_to_dict(self.config)
+        data = self._config_to_dict(self.mirror_config)
         self.config_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -133,7 +133,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             await self._notify_update(group_id, res, data)
 
             # 自动上传
-            if res.auto and self.config.cdk:
+            if res.auto and self.mirror_config.cdk:
                 await self._auto_upload(group_id, res, data)
 
     async def _check_resource_force(self, group_id: str, res: ResourceConfig):
@@ -261,7 +261,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         save_path = str((self.data_dir / filename).resolve())
 
         ok, err, _ = await download_resource(
-            res.rid, res.type, res.channel, self.config.cdk, save_path
+            res.rid, res.type, res.channel, self.mirror_config.cdk, save_path
         )
 
         if not ok:
@@ -291,11 +291,11 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
     def _get_group_sub(self, group_id: str) -> GroupSubscription:
         """获取或创建群订阅"""
-        for sub in self.config.subscriptions:
+        for sub in self.mirror_config.subscriptions:
             if sub.group_id == group_id:
                 return sub
         sub = GroupSubscription(group_id=group_id)
-        self.config.subscriptions.append(sub)
+        self.mirror_config.subscriptions.append(sub)
         return sub
 
     @command_registry.command("mirror_sub", description="[管理员] 订阅资源")
@@ -371,7 +371,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             await event.reply("需要管理员权限")
             return
         group_id = str(event.group_id)
-        for sub in self.config.subscriptions:
+        for sub in self.mirror_config.subscriptions:
             if sub.group_id == group_id:
                 for r in sub.resources[:]:
                     if r.rid == rid and r.type == type:
@@ -388,7 +388,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
     async def cmd_list(self, event: GroupMessageEvent):
         """查看订阅列表"""
         group_id = str(event.group_id)
-        for sub in self.config.subscriptions:
+        for sub in self.mirror_config.subscriptions:
             if sub.group_id == group_id and sub.resources:
                 lines = ["本群订阅:"]
                 for r in sub.resources:
@@ -408,7 +408,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             return
 
         group_id = str(event.group_id)
-        for sub in self.config.subscriptions:
+        for sub in self.mirror_config.subscriptions:
             if sub.group_id == group_id:
                 checked = 0
                 for r in sub.resources:
@@ -445,7 +445,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             return
 
         group_id = str(event.group_id)
-        for sub in self.config.subscriptions:
+        for sub in self.mirror_config.subscriptions:
             if sub.group_id == group_id:
                 for r in sub.resources:
                     if r.rid == rid and r.type == type:
@@ -502,7 +502,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             await event.reply("渠道只能是 stable/beta/alpha")
             return
 
-        if not self.config.cdk:
+        if not self.mirror_config.cdk:
             await event.reply("未设置CDK，请管理员私聊设置")
             return
 
@@ -514,7 +514,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         save_path = str((self.data_dir / filename).resolve())
 
         ok, msg, data = await download_resource(
-            rid, type, channel, self.config.cdk, save_path
+            rid, type, channel, self.mirror_config.cdk, save_path
         )
 
         if not ok:
@@ -557,7 +557,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         if not self.rbac_manager.user_has_role(str(event.user_id), "root"):
             await event.reply("需要root权限")
             return
-        self.config.cdk = cdk
+        self.mirror_config.cdk = cdk
         self._save_config()
         await event.reply("CDK 设置成功")
 

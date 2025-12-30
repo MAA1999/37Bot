@@ -37,7 +37,7 @@ class GroupAdminPlugin(NcatBotPlugin):
         """插件加载"""
         self.config_path = self.workspace / "config.json"
         self.db = MemberDB(self.workspace / "members.db")
-        self.config = self._load_config()
+        self.group_config = self._load_config()
         # 缓存待处理的加群请求 {flag: (group_id, user_id, comment)}
         self.pending_requests = {}
 
@@ -54,13 +54,13 @@ class GroupAdminPlugin(NcatBotPlugin):
         return GroupAdminConfig()
 
     def _save_config(self):
-        data = {"rules": [asdict(r) for r in self.config.rules]}
+        data = {"rules": [asdict(r) for r in self.group_config.rules]}
         self.config_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
     def _get_rule(self, group_id: str) -> GroupRule:
-        for rule in self.config.rules:
+        for rule in self.group_config.rules:
             if rule.group_id == group_id:
                 return rule
         return None
@@ -69,7 +69,7 @@ class GroupAdminPlugin(NcatBotPlugin):
         rule = self._get_rule(group_id)
         if rule is None:
             rule = GroupRule(group_id=group_id, enabled=False)
-            self.config.rules.append(rule)
+            self.group_config.rules.append(rule)
         return rule
 
     # ========== 事件处理 ==========

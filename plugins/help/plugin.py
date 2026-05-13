@@ -18,6 +18,8 @@ class HelpPlugin(NcatBotPlugin):
         "mirrorchyan": "Mirror酱",
         "groupadmin": "群管",
         "todo": "待办",
+        "sensitivemonitor": "敏感词监测",
+        "qahelper": "Q&A问答",
     }
 
     def _get_plugin_display_name(self, plugin_name: str) -> str:
@@ -69,8 +71,8 @@ class HelpPlugin(NcatBotPlugin):
         return grouped
 
     @command_registry.command("help", description="显示帮助信息")
-    @param(name="module", default=None, help="模块名称")
-    async def help_cmd(self, event: BaseMessageEvent, module: str = None):
+    @param(name="module", default="", help="模块名称")
+    async def help_cmd(self, event: BaseMessageEvent, module: str = ""):
         """显示帮助信息"""
         permission = await self._get_user_permission(event)
         grouped = self._group_commands_by_plugin()
@@ -85,7 +87,7 @@ class HelpPlugin(NcatBotPlugin):
             if visible_cmds:
                 filtered[plugin] = visible_cmds
 
-        if module is None:
+        if module == "":
             # 显示模块列表
             lines = ["📚 可用模块:"]
             for plugin, cmds in sorted(filtered.items()):

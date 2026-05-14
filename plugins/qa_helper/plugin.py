@@ -10,7 +10,7 @@ from ncatbot.plugin_system import NcatBotPlugin, command_registry, param, on_mes
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.utils import get_log, ncatbot_config
 
-from plugins._ai import LLMClient, load_llm_config, save_llm_config
+from plugins._ai import get_llm, is_llm_configured, load_llm_config, save_llm_config
 from .config import QAGroupConfig
 
 logger = get_log("QA")
@@ -39,12 +39,7 @@ class QaHelperPlugin(NcatBotPlugin):
     async def on_load(self):
         self.config_path = self.workspace / "config.json"
         self.groups: dict[str, QAGroupConfig] = self._load_config()
-        self._init_llm()
         self._bot_qq: str | None = None
-
-    def _init_llm(self):
-        cfg = load_llm_config()
-        self.llm = LLMClient(base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model)
 
     def _load_config(self) -> dict[str, QAGroupConfig]:
         if self.config_path.exists():
@@ -176,7 +171,7 @@ class QaHelperPlugin(NcatBotPlugin):
         if not is_at_bot:
             if not question or not self._looks_like_question(question):
                 return
-            if not self.llm.configured:
+            if not is_llm_configured():
                 return
             ctx = ""
             try:
@@ -191,7 +186,7 @@ class QaHelperPlugin(NcatBotPlugin):
                     )
             except Exception:
                 pass
-            if not await self.llm.judge_question(cfg.project, question, ctx):
+            if not await get_llm().judge_question(cfg.project, question, ctx):
                 return
             logger.info(f"QA 触发（LLM判定）: group={group_id}, question={question[:100]}")
 
@@ -199,12 +194,12 @@ class QaHelperPlugin(NcatBotPlugin):
             await event.reply("请问具体问题是什么？")
             return
 
-        if not self.llm.configured:
+        if not is_llm_configured():
             await event.reply("LLM 尚未配置，请联系管理员。")
             return
 
         system_prompt = self._get_system_prompt(cfg)
-        answer = await self.llm.answer_question(question, system_prompt)
+        answer = await get_llm().answer_question(question, system_prompt)
         if answer:
             await event.reply(answer)
         else:
@@ -242,7 +237,6 @@ class QaHelperPlugin(NcatBotPlugin):
         cfg.api_key = api_key
         cfg.model = model
         save_llm_config(cfg)
-        self._init_llm()
         await event.reply(f"LLM 配置已更新: {model} @ {base_url}")
 
     @command_registry.command("qa", description="[管理员] Q&A 问答 on/off [项目名]")

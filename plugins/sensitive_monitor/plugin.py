@@ -6,7 +6,7 @@ from ncatbot.plugin_system import NcatBotPlugin, command_registry, param, on_mes
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.utils import get_log
 
-from plugins._ai import LLMClient, load_llm_config, save_llm_config
+from plugins._ai import get_llm, is_llm_configured, load_llm_config, save_llm_config
 from .config import SensitiveGroupConfig
 
 logger = get_log("Sensitive")
@@ -24,11 +24,6 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
     async def on_load(self):
         self.config_path = self.workspace / "config.json"
         self.groups: dict[str, SensitiveGroupConfig] = self._load_config()
-        self._init_llm()
-
-    def _init_llm(self):
-        cfg = load_llm_config()
-        self.llm = LLMClient(base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model)
 
     def _load_config(self) -> dict[str, SensitiveGroupConfig]:
         if self.config_path.exists():
@@ -85,7 +80,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if len(RECENT_PROCESSED) > MAX_RECENT:
             RECENT_PROCESSED.clear()
 
-        if not self.llm.configured:
+        if not is_llm_configured():
             return
 
         context = ""
@@ -102,7 +97,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
-        is_sensitive, reason = await self.llm.judge_sensitive(text, context)
+        is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
             logger.info(f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}")
             await self._notify(cfg, group_id, str(event.user_id), text, reason)
@@ -146,7 +141,6 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         cfg.api_key = api_key
         cfg.model = model
         save_llm_config(cfg)
-        self._init_llm()
         await event.reply(f"LLM 配置已更新: {model} @ {base_url}")
 
     @command_registry.command("sensitive", description="[管理员] 敏感消息监听 on/off")

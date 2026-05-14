@@ -1,6 +1,7 @@
 """LLM 客户端 —— OpenAI 兼容 API"""
 
 import asyncio
+import time
 import httpx
 from ncatbot.utils import get_log
 
@@ -9,16 +10,108 @@ logger = get_log("AiMod")
 MAX_CONCURRENT = 3
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
+# ====== 健康追踪 ======
+
+UNHEALTHY_THRESHOLD = 3      # 连续失败 N 次标记不健康
+COOLDOWN_SECONDS = 300        # 不健康模型 5 分钟后重试
+PROBE_INTERVAL = 300          # 探测间隔 5 分钟
+
+_health: dict[str, dict] = {}  # key="url|model" → {failures, last_fail}
+_probe_started = False
+
+
+def _hkey(base_url: str, model: str) -> str:
+    return f"{base_url}|{model}"
+
+
+def _is_healthy(base_url: str, model: str) -> bool:
+    entry = _health.get(_hkey(base_url, model))
+    if not entry:
+        return True
+    if entry["failures"] >= UNHEALTHY_THRESHOLD:
+        if time.time() - entry["last_fail"] < COOLDOWN_SECONDS:
+            return False
+        # cooldown 过了，重新给机会
+        _health[_hkey(base_url, model)] = {"failures": 0, "last_fail": 0}
+    return True
+
+
+def _mark_success(base_url: str, model: str):
+    _health[_hkey(base_url, model)] = {"failures": 0, "last_fail": 0}
+
+
+def _mark_failure(base_url: str, model: str):
+    key = _hkey(base_url, model)
+    entry = _health.get(key, {"failures": 0, "last_fail": 0})
+    entry["failures"] += 1
+    entry["last_fail"] = time.time()
+    _health[key] = entry
+    if entry["failures"] == UNHEALTHY_THRESHOLD:
+        logger.warning(f"模型标记为不健康 (将在 {COOLDOWN_SECONDS}s 后重试): {model}")
+
+
+def get_health_status() -> dict:
+    """返回所有模型健康状态副本"""
+    return {
+        k: {"failures": v["failures"], "healthy": v["failures"] < UNHEALTHY_THRESHOLD}
+        for k, v in _health.items()
+    }
+
+
+async def start_health_probe(get_client_fn):
+    """启动周期探测（幂等，仅首次调用生效）。get_client_fn 返回 LLMClient。"""
+    global _probe_started
+    if _probe_started:
+        return
+    _probe_started = True
+    asyncio.create_task(_health_probe_loop(get_client_fn))
+
+
+async def _health_probe_loop(get_client_fn):
+    await asyncio.sleep(60)
+    while True:
+        await asyncio.sleep(PROBE_INTERVAL)
+        client = get_client_fn()
+        for label, base_url, api_key, model in client._model_cfgs():
+            if _is_healthy(base_url, model):
+                continue  # 健康的不用探测
+            logger.info(f"健康探测: {label} {model}")
+            msgs = [{"role": "user", "content": "hi"}]
+            try:
+                async with _semaphore:
+                    result = await client._chat_impl(
+                        base_url, api_key, model, msgs, 0, 5, False, 15)
+                if result is not None:
+                    _mark_success(base_url, model)
+                    logger.info(f"健康探测恢复: {label} {model}")
+            except Exception:
+                pass
+
 
 class LLMClient:
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, backups: list[dict] = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.backups = backups or []
 
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.model)
+
+    def _model_cfgs(self):
+        """生成器：主模型 + 备用模型依次产出 (label, base_url, api_key, model)，跳过不健康的"""
+        if _is_healthy(self.base_url, self.model):
+            yield "primary", self.base_url, self.api_key, self.model
+        else:
+            logger.debug(f"跳过不健康主模型: {self.model}")
+        for i, b in enumerate(self.backups):
+            bu = b["base_url"].rstrip("/")
+            bm = b["model"]
+            if _is_healthy(bu, bm):
+                yield f"backup-{i+1}", bu, b["api_key"], bm
+            else:
+                logger.debug(f"跳过不健康备用: {bm}")
 
     async def chat(
         self,
@@ -34,23 +127,42 @@ class LLMClient:
             return None
 
         async with _semaphore:
-            return await self._chat_impl(messages, temperature, max_tokens, stream, timeout)
+            for label, base_url, api_key, model in self._model_cfgs():
+                result = await self._chat_impl(base_url, api_key, model, messages,
+                                                temperature, max_tokens, stream, timeout)
+                if result is not None:
+                    _mark_success(base_url, model)
+                    if label != "primary":
+                        logger.info(f"主模型失败，{label} 接管成功: {model}")
+                    return result
+                _mark_failure(base_url, model)
+                if label == self._last_backup_label():
+                    logger.error(f"所有模型均失败")
+                else:
+                    logger.warning(f"{label} 模型失败，尝试下一个")
+        return None
+
+    def _last_backup_label(self):
+        return f"backup-{len(self.backups)}" if self.backups else "primary"
 
     async def _chat_impl(
         self,
+        base_url: str,
+        api_key: str,
+        model: str,
         messages: list[dict],
         temperature: float,
         max_tokens: int,
         stream: bool,
         timeout: float,
     ) -> str | None:
-        url = f"{self.base_url}/chat/completions"
+        url = f"{base_url}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -58,7 +170,7 @@ class LLMClient:
         }
 
         last_error = None
-        for attempt in range(3):
+        for attempt in range(3 if stream else 2):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
                     if stream:
@@ -91,9 +203,8 @@ class LLMClient:
                         return content.strip()
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
-                logger.error(f"LLM 请求异常 (attempt {attempt + 1}): {last_error}")
+                logger.error(f"LLM 请求异常 ({model} attempt {attempt + 1}): {last_error}")
 
-        logger.error(f"LLM 请求全部重试失败: {last_error}")
         return None
 
     async def judge_sensitive(self, message_text: str, context: str = "") -> tuple[bool, str]:

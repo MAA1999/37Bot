@@ -10,7 +10,7 @@ from ncatbot.plugin_system import NcatBotPlugin, command_registry, param, on_mes
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.utils import get_log, ncatbot_config
 
-from plugins._ai import get_llm, is_llm_configured, load_llm_config, save_llm_config
+from plugins._ai import get_llm, is_llm_configured, load_llm_config, save_llm_config, start_llm_health_probe, get_health_status
 from .config import QAGroupConfig
 
 logger = get_log("QA")
@@ -66,6 +66,7 @@ class QaHelperPlugin(NcatBotPlugin):
         self.groups: dict[str, QAGroupConfig] = self._load_config()
         self._bot_qq: str | None = None
         self._name_cache: dict[str, str] = {}
+        start_llm_health_probe()
         asyncio.create_task(self._auto_refresh_loop())
 
     async def _auto_refresh_loop(self):
@@ -503,7 +504,63 @@ class QaHelperPlugin(NcatBotPlugin):
             self._save_gh_token(token)
             await event.reply("GitHub Token 已更新")
 
-    @command_registry.command("qa", description="[管理员] Q&A 问答 on/off [项目名]")
+    @command_registry.command("llm_backup", description="[root] 管理备用 LLM: add <url> <key> <model> / list / remove <N> / clear")
+    async def cmd_backup(self, event: PrivateMessageEvent, action: str = "list",
+                         url: str = "", key: str = "", model: str = ""):
+        if event.message_type != "private":
+            await event.reply("请私聊使用此命令")
+            return
+        if not self.rbac_manager.user_has_role(str(event.user_id), "root"):
+            await event.reply("需要 root 权限")
+            return
+        cfg = load_llm_config()
+        a = action.lower()
+        if a == "add":
+            if not url or not key or not model:
+                await event.reply("用法: /llm_backup add <base_url> <api_key> <model>")
+                return
+            cfg.backups.append({"base_url": url.rstrip("/"), "api_key": key, "model": model})
+            save_llm_config(cfg)
+            await event.reply(f"备用模型已添加 (#{len(cfg.backups)}): {model}")
+        elif a == "list":
+            if not cfg.backups:
+                await event.reply("无备用模型")
+                return
+            lines = [f"主模型: {cfg.model} @ {cfg.base_url}", "备用模型:"]
+            for i, b in enumerate(cfg.backups):
+                lines.append(f"  [{i+1}] {b['model']} @ {b['base_url']}")
+            await event.reply("\n".join(lines))
+        elif a == "remove":
+            try:
+                idx = int(url) - 1
+                removed = cfg.backups.pop(idx)
+                save_llm_config(cfg)
+                await event.reply(f"已移除备用模型: {removed['model']}")
+            except (ValueError, IndexError):
+                await event.reply("用法: /llm_backup remove <序号>，用 list 查看序号")
+        elif a == "clear":
+            cfg.backups = []
+            save_llm_config(cfg)
+            await event.reply("所有备用模型已清除")
+        else:
+            await event.reply("支持: add / list / remove / clear")
+
+    @command_registry.command("llm_health", description="查看各模型健康状态")
+    async def cmd_health(self, event):
+        cfg = load_llm_config()
+        status = get_health_status()
+        lines = [f"主模型: {cfg.model} @ {cfg.base_url}"]
+        key = f"{cfg.base_url}|{cfg.model}"
+        h = status.get(key)
+        lines.append(f"  状态: {'🟢 健康' if (not h or h['healthy']) else '🔴 不健康 (%d次)' % h['failures']}")
+        for i, b in enumerate(cfg.backups):
+            bu = b["base_url"].rstrip("/")
+            bm = b["model"]
+            key = f"{bu}|{bm}"
+            h = status.get(key)
+            lines.append(f"备用 #{i+1}: {bm} @ {bu}")
+            lines.append(f"  状态: {'🟢 健康' if (not h or h['healthy']) else '🔴 不健康 (%d次)' % h['failures']}")
+        await event.reply("\n".join(lines))
     @param(name="action", default="on", help="on 或 off")
     @param(name="project", default="", help="项目名: M9A MaaEnd MXU MFAAvalonia")
     async def cmd_enable(

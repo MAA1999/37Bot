@@ -561,8 +561,10 @@ class QaHelperPlugin(NcatBotPlugin):
             lines.append(f"备用 #{i+1}: {bm} @ {bu}")
             lines.append(f"  状态: {'🟢 健康' if (not h or h['healthy']) else '🔴 不健康 (%d次)' % h['failures']}")
         await event.reply("\n".join(lines))
+
+    @command_registry.command("qa", description="[管理员] Q&A 问答 on/off [项目名: M9A/MaaEnd/MXU/MFAA]")
     @param(name="action", default="on", help="on 或 off")
-    @param(name="project", default="", help="项目名: M9A MaaEnd MXU MFAAvalonia")
+    @param(name="project", default="", help="项目名: M9A MaaEnd MXU MFAA")
     async def cmd_enable(
         self, event: GroupMessageEvent, action: str = "on", project: str = ""
     ):

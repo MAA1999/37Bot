@@ -1,9 +1,13 @@
 """LLM 客户端 —— OpenAI 兼容 API"""
 
+import asyncio
 import httpx
 from ncatbot.utils import get_log
 
 logger = get_log("AiMod")
+
+MAX_CONCURRENT = 3
+_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 
 class LLMClient:
@@ -29,6 +33,17 @@ class LLMClient:
             logger.error("LLM 未配置")
             return None
 
+        async with _semaphore:
+            return await self._chat_impl(messages, temperature, max_tokens, stream, timeout)
+
+    async def _chat_impl(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+        stream: bool,
+        timeout: float,
+    ) -> str | None:
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",

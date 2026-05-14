@@ -42,23 +42,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <style>
-body {
+body {{
   font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei", sans-serif;
   background: #f8f9fa; margin: 0; padding: 24px;
-}
-.card {
+}}
+.card {{
   max-width: 720px; margin: 0 auto;
   background: #fff; border-radius: 12px;
   box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 28px 32px;
-}
-h1 { font-size: 22px; color: #1a1a2e; margin: 0 0 16px 0; border-bottom: 2px solid #eee; padding-bottom: 12px; }
-h2 { font-size: 17px; color: #333; margin: 20px 0 8px 0; }
-p, li { font-size: 15px; color: #444; line-height: 1.7; }
-table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
-th { background: #f0f0f5; text-align: left; padding: 6px 8px; }
-td { padding: 6px 8px; border-bottom: 1px solid #eee; }
-strong { color: #1a1a2e; }
-.footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid #eee; font-size: 12px; color: #999; text-align: right; }
+}}
+h1 {{ font-size: 22px; color: #1a1a2e; margin: 0 0 16px 0; border-bottom: 2px solid #eee; padding-bottom: 12px; }}
+h2 {{ font-size: 17px; color: #333; margin: 20px 0 8px 0; }}
+p, li {{ font-size: 15px; color: #444; line-height: 1.7; }}
+table {{ border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }}
+th {{ background: #f0f0f5; text-align: left; padding: 6px 8px; }}
+td {{ padding: 6px 8px; border-bottom: 1px solid #eee; }}
+strong {{ color: #1a1a2e; }}
+.footer {{ margin-top: 20px; padding-top: 12px; border-top: 1px solid #eee; font-size: 12px; color: #999; text-align: right; }}
 </style>
 </head>
 <body>

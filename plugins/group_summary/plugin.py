@@ -139,6 +139,21 @@ class GroupSummaryPlugin(NcatBotPlugin):
         self._name_cache[cache_key] = display
         return display
 
+    # ====== QA 配置读取 ======
+
+    def _load_qa_projects(self, group_id: str) -> list[str]:
+        """读取 QA 插件在本群配置的项目列表"""
+        qa_cfg = self.workspace.parent / "QaHelperPlugin" / "config.json"
+        if not qa_cfg.exists():
+            return []
+        try:
+            data = json.loads(qa_cfg.read_text("utf-8"))
+            g = data.get(group_id, {})
+            proj = g.get("projects") or ([] if not g.get("project") else [g["project"]])
+            return [p for p in proj if isinstance(p, str)]
+        except Exception:
+            return []
+
     # ====== 核心 ======
 
     async def _do_summary(self, group_id: str, cfg: SummaryGroupConfig,
@@ -194,7 +209,13 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
         system_prompt = SUMMARY_SYSTEM
         if cfg.track_issues:
-            system_prompt += ISSUE_TRACK_PROMPT
+            qa_projects = self._load_qa_projects(group_id)
+            if qa_projects:
+                system_prompt += ISSUE_TRACK_PROMPT + (
+                    f"\n只记录与以下项目相关的问题：{'、'.join(qa_projects)}。其他问题忽略。"
+                )
+            else:
+                system_prompt += ISSUE_TRACK_PROMPT
 
         messages = [
             {"role": "system", "content": system_prompt},

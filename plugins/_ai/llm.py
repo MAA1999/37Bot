@@ -25,7 +25,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float = 0.1,
         max_tokens: int = 500,
-        stream: bool = True,
+        stream: bool = False,
         timeout: float = 30,
     ) -> str | None:
         """发送聊天请求，返回回复文本。失败返回 None。"""
@@ -90,7 +90,7 @@ class LLMClient:
                         content = data["choices"][0]["message"]["content"]
                         return content.strip()
             except Exception as e:
-                last_error = str(e)
+                last_error = f"{type(e).__name__}: {e}"
                 logger.error(f"LLM 请求异常 (attempt {attempt + 1}): {last_error}")
 
         logger.error(f"LLM 请求全部重试失败: {last_error}")

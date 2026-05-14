@@ -79,7 +79,7 @@ async def _health_probe_loop(get_client_fn):
             msgs = [{"role": "user", "content": "hi"}]
             try:
                 async with _semaphore:
-                    result = await client._chat_impl(
+                    result, _ = await client._chat_impl(
                         base_url, api_key, model, msgs, 0, 5, False, 15)
                 if result is not None:
                     _mark_success(base_url, model)
@@ -104,14 +104,16 @@ class LLMClient:
         if _is_healthy(self.base_url, self.model):
             yield "primary", self.base_url, self.api_key, self.model
         else:
-            logger.debug(f"跳过不健康主模型: {self.model}")
+            logger.info(f"跳过不健康主模型: {self.model}")
         for i, b in enumerate(self.backups):
             bu = b["base_url"].rstrip("/")
             bm = b["model"]
             if _is_healthy(bu, bm):
                 yield f"backup-{i+1}", bu, b["api_key"], bm
             else:
-                logger.debug(f"跳过不健康备用: {bm}")
+                logger.info(f"跳过不健康备用 #{i+1}: {bm}")
+        if not self.backups:
+            logger.debug("无备用模型配置")
 
     async def chat(
         self,
@@ -128,14 +130,15 @@ class LLMClient:
 
         async with _semaphore:
             for label, base_url, api_key, model in self._model_cfgs():
-                result = await self._chat_impl(base_url, api_key, model, messages,
-                                                temperature, max_tokens, stream, timeout)
+                result, is_transient = await self._chat_impl(
+                    base_url, api_key, model, messages, temperature, max_tokens, stream, timeout)
                 if result is not None:
                     _mark_success(base_url, model)
                     if label != "primary":
                         logger.info(f"主模型失败，{label} 接管成功: {model}")
                     return result
-                _mark_failure(base_url, model)
+                if not is_transient:
+                    _mark_failure(base_url, model)
                 if label == self._last_backup_label():
                     logger.error(f"所有模型均失败")
                 else:
@@ -155,7 +158,7 @@ class LLMClient:
         max_tokens: int,
         stream: bool,
         timeout: float,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:  # (content, is_transient_error)
         url = f"{base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -170,6 +173,7 @@ class LLMClient:
         }
 
         last_error = None
+        any_real_failure = False
         for attempt in range(3 if stream else 2):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
@@ -177,7 +181,10 @@ class LLMClient:
                         content = ""
                         async with client.stream("POST", url, json=payload, headers=headers) as resp:
                             if resp.status_code != 200:
-                                last_error = f"HTTP {resp.status_code}"
+                                status = resp.status_code
+                                last_error = f"HTTP {status}"
+                                if status not in (502, 504):
+                                    any_real_failure = True
                                 logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
                                 continue
                             async for line in resp.aiter_lines():
@@ -191,21 +198,35 @@ class LLMClient:
                                         content += delta
                                     except Exception:
                                         pass
-                        return content.strip() if content else None
+                        result = content.strip()
+                        if result:
+                            return (result, False)
+                        last_error = "EmptyResponse"
+                        continue
                     else:
                         resp = await client.post(url, json=payload, headers=headers)
                         if resp.status_code != 200:
-                            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                            status = resp.status_code
+                            last_error = f"HTTP {status}: {resp.text[:200]}"
+                            if status not in (502, 504):
+                                any_real_failure = True
                             logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
                             continue
                         data = resp.json()
                         content = data["choices"][0]["message"]["content"]
-                        return content.strip()
+                        result = content.strip()
+                        if result:
+                            return (result, False)
+                        last_error = "EmptyResponse"
+                        continue
             except Exception as e:
-                last_error = f"{type(e).__name__}: {e}"
+                ename = type(e).__name__
+                last_error = f"{ename}: {e}"
+                if ename not in ("ReadTimeout", "ReadError"):
+                    any_real_failure = True
                 logger.error(f"LLM 请求异常 ({model} attempt {attempt + 1}): {last_error}")
 
-        return None
+        return (None, not any_real_failure)
 
     async def judge_sensitive(self, message_text: str, context: str = "") -> tuple[bool, str]:
         """判断消息是否包含政治敏感内容。返回 (is_sensitive, reason)。"""

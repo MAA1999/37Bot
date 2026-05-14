@@ -1,6 +1,7 @@
 """LLM 客户端 —— OpenAI 兼容 API"""
 
 import asyncio
+import json
 import time
 import httpx
 from ncatbot.utils import get_log
@@ -113,7 +114,7 @@ class LLMClient:
             else:
                 logger.info(f"跳过不健康备用 #{i+1}: {bm}")
         if not self.backups:
-            logger.debug("无备用模型配置")
+            logger.info("无备用模型配置，仅使用主模型")
 
     async def chat(
         self,
@@ -129,7 +130,9 @@ class LLMClient:
             return None
 
         async with _semaphore:
-            for label, base_url, api_key, model in self._model_cfgs():
+            cfgs = list(self._model_cfgs())
+            logger.debug(f"可用模型: {[l for l,_,_,_ in cfgs]}")
+            for label, base_url, api_key, model in cfgs:
                 result, is_transient = await self._chat_impl(
                     base_url, api_key, model, messages, temperature, max_tokens, stream, timeout)
                 if result is not None:
@@ -139,14 +142,19 @@ class LLMClient:
                     return result
                 if not is_transient:
                     _mark_failure(base_url, model)
-                if label == self._last_backup_label():
-                    logger.error(f"所有模型均失败")
+                next_label = self._next_label(label)
+                if next_label is None:
+                    logger.error(f"所有模型均失败 ({label})")
                 else:
-                    logger.warning(f"{label} 模型失败，尝试下一个")
+                    logger.warning(f"{label} 失败 → 尝试 {next_label}")
         return None
 
-    def _last_backup_label(self):
-        return f"backup-{len(self.backups)}" if self.backups else "primary"
+    def _next_label(self, current: str) -> str | None:
+        cfg_list = list(self._model_cfgs())
+        for i, (label, _, _, _) in enumerate(cfg_list):
+            if label == current and i + 1 < len(cfg_list):
+                return cfg_list[i + 1][0]
+        return None
 
     async def _chat_impl(
         self,
@@ -179,6 +187,7 @@ class LLMClient:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
                     if stream:
                         content = ""
+                        lines_received = 0
                         async with client.stream("POST", url, json=payload, headers=headers) as resp:
                             if resp.status_code != 200:
                                 status = resp.status_code
@@ -189,6 +198,7 @@ class LLMClient:
                                 continue
                             async for line in resp.aiter_lines():
                                 if line.startswith("data: "):
+                                    lines_received += 1
                                     data_str = line[6:]
                                     if data_str == "[DONE]":
                                         break
@@ -201,6 +211,7 @@ class LLMClient:
                         result = content.strip()
                         if result:
                             return (result, False)
+                        logger.warning(f"{model} HTTP 200 但无内容 (SSE行数={lines_received})")
                         last_error = "EmptyResponse"
                         continue
                     else:

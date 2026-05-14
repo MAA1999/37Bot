@@ -154,8 +154,22 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
         # 日期过滤
         if date_filter:
-            recent = [m for m in recent if str(m.time).startswith(date_filter)]
+            filtered = []
+            for m in recent:
+                mt = m.time
+                if isinstance(mt, str):
+                    ts = mt
+                else:
+                    try:
+                        ts = datetime.fromtimestamp(float(mt)).strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        ts = str(mt)
+                if ts.startswith(date_filter):
+                    filtered.append(m)
+            logger.info(f"日期过滤: {fetch_count}条 → {len(filtered)}条 (date={date_filter})")
+            recent = filtered
             if not recent:
+                logger.warning(f"日期过滤后无消息: date={date_filter}")
                 return None
 
         lines = []

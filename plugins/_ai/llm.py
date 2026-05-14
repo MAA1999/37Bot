@@ -21,6 +21,8 @@ class LLMClient:
         messages: list[dict],
         temperature: float = 0.1,
         max_tokens: int = 500,
+        stream: bool = True,
+        timeout: float = 30,
     ) -> str | None:
         """发送聊天请求，返回回复文本。失败返回 None。"""
         if not self.configured:
@@ -37,20 +39,41 @@ class LLMClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "stream": stream,
         }
 
         last_error = None
         for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.post(url, json=payload, headers=headers)
-                    if resp.status_code != 200:
-                        last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                        logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
-                        continue
-                    data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    return content.strip()
+                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
+                    if stream:
+                        content = ""
+                        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                            if resp.status_code != 200:
+                                last_error = f"HTTP {resp.status_code}"
+                                logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
+                                continue
+                            async for line in resp.aiter_lines():
+                                if line.startswith("data: "):
+                                    data_str = line[6:]
+                                    if data_str == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = json.loads(data_str)
+                                        delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                                        content += delta
+                                    except Exception:
+                                        pass
+                        return content.strip() if content else None
+                    else:
+                        resp = await client.post(url, json=payload, headers=headers)
+                        if resp.status_code != 200:
+                            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                            logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
+                            continue
+                        data = resp.json()
+                        content = data["choices"][0]["message"]["content"]
+                        return content.strip()
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"LLM 请求异常 (attempt {attempt + 1}): {last_error}")

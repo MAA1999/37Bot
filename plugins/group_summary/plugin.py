@@ -82,6 +82,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.groups: dict[str, SummaryGroupConfig] = self._load_config()
         self._name_cache: dict[str, str] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         asyncio.create_task(self._auto_summary_loop())
 
     # ====== 配置 ======
@@ -142,6 +143,15 @@ class GroupSummaryPlugin(NcatBotPlugin):
     async def _do_summary(self, group_id: str, cfg: SummaryGroupConfig,
                           date_filter: str = "") -> str | None:
         """生成总结。date_filter = 'YYYY-MM-DD' 时只取当天消息。"""
+        lock = self._locks.setdefault(group_id, asyncio.Lock())
+        if lock.locked():
+            logger.warning(f"总结任务进行中，跳过重复请求: group={group_id}")
+            return None
+        async with lock:
+            return await self._do_summary_locked(group_id, cfg, date_filter)
+
+    async def _do_summary_locked(self, group_id: str, cfg: SummaryGroupConfig,
+                                  date_filter: str) -> str | None:
         fetch_count = max(cfg.message_count, 3000) if date_filter else cfg.message_count
         try:
             recent = await self.api.get_group_msg_history(group_id, count=fetch_count)
@@ -169,7 +179,6 @@ class GroupSummaryPlugin(NcatBotPlugin):
             logger.info(f"日期过滤: {fetch_count}条 → {len(filtered)}条 (date={date_filter})")
             recent = filtered
             if not recent:
-                logger.warning(f"日期过滤后无消息: date={date_filter}")
                 return None
 
         lines = []
@@ -187,7 +196,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
             {"role": "user", "content": f"请总结以下 {len(recent)} 条群聊消息：\n\n{chat_text}"},
         ]
 
-        reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000)
+        reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000, timeout=180)
         return reply
 
     async def _render_to_image(self, md_text: str, group_id: str) -> Path | None:

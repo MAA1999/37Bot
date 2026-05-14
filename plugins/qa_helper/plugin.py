@@ -25,8 +25,14 @@ DOCS_URLS: dict[str, list[str]] = {
         "https://raw.githubusercontent.com/MAA1999/M9A/main/docs/zh_cn/manual/MirrorChyan.md",
     ],
     "maaend": [
+        "https://raw.githubusercontent.com/MaaEnd/MaaEnd/v2/README.md",
         "https://raw.githubusercontent.com/MaaEnd/MaaEnd/v2/docs/zh_cn/users/troubleshooting.md",
     ],
+}
+
+ISSUES_REPOS: dict[str, str] = {
+    "m9a": "MAA1999/M9A",
+    "maaend": "MaaEnd/MaaEnd",
 }
 
 
@@ -59,10 +65,18 @@ class QaHelperPlugin(NcatBotPlugin):
 
     def _save_config(self):
         self.config_path.write_text(
-            json.dumps({
-                gid: {"enabled": g.enabled, "project": g.project, "system_prompt": g.system_prompt}
-                for gid, g in self.groups.items()
-            }, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    gid: {
+                        "enabled": g.enabled,
+                        "project": g.project,
+                        "system_prompt": g.system_prompt,
+                    }
+                    for gid, g in self.groups.items()
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -78,6 +92,27 @@ class QaHelperPlugin(NcatBotPlugin):
         if self._bot_qq is None:
             self._bot_qq = str(ncatbot_config.bt_uin)
         return self._bot_qq
+
+    # ====== GitHub Token ======
+
+    def _load_gh_token(self) -> str:
+        p = self.workspace / "github_token.txt"
+        if p.exists():
+            try:
+                return p.read_text("utf-8").strip()
+            except Exception:
+                pass
+        return ""
+
+    def _save_gh_token(self, token: str):
+        (self.workspace / "github_token.txt").write_text(token.strip(), encoding="utf-8")
+
+    def _gh_headers(self) -> dict:
+        h = {"User-Agent": "37Bot-QA", "Accept": "application/vnd.github.v3+json"}
+        token = self._load_gh_token()
+        if token:
+            h["Authorization"] = f"Bearer {token}"
+        return h
 
     # ====== 提示词 ======
 
@@ -98,7 +133,7 @@ class QaHelperPlugin(NcatBotPlugin):
         if text.startswith("---"):
             end = text.find("---", 3)
             if end != -1:
-                text = text[end + 3:].lstrip("\n")
+                text = text[end + 3 :].lstrip("\n")
         return text
 
     async def _fetch_docs(self, project: str) -> str | None:
@@ -123,6 +158,12 @@ class QaHelperPlugin(NcatBotPlugin):
             return None
 
         combined = "\n\n---\n\n".join(contents)
+        issue_section = await self._fetch_issues(project)
+        if issue_section:
+            combined += "\n\n---\n\n" + issue_section
+        release_section = await self._fetch_releases(project)
+        if release_section:
+            combined += "\n\n---\n\n" + release_section
         return (
             f"你是 {project} 项目助手。请根据以下文档内容回答用户的问题。\n"
             f"回答应简洁准确。对于不知道的问题，直接说不知道，不要编造。\n\n"
@@ -130,15 +171,114 @@ class QaHelperPlugin(NcatBotPlugin):
             f"{combined}"
         )
 
+    async def _fetch_issues(self, project: str) -> str | None:
+        repo = ISSUES_REPOS.get(project.lower(), "")
+        if not repo:
+            return None
+
+        headers = self._gh_headers()
+
+        async def fetch_page(state: str, per_page: int) -> list[dict]:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(
+                        f"https://api.github.com/repos/{repo}/issues",
+                        params={"state": state, "sort": "updated", "direction": "desc", "per_page": per_page, "filter": "all"},
+                        headers=headers,
+                    )
+                    if resp.status_code != 200:
+                        logger.error(f"GitHub Issues API 失败: HTTP {resp.status_code}")
+                        return []
+                    return resp.json()
+            except Exception as e:
+                logger.error(f"GitHub Issues API 异常: {e}")
+                return []
+
+        open_issues = await fetch_page("open", 20)
+        closed_issues = await fetch_page("closed", 10)
+
+        def format_issues(issues: list[dict], state_label: str) -> str:
+            lines = [f"### {state_label}"]
+            count = 0
+            for iss in issues:
+                if "pull_request" in iss:
+                    continue
+                number = iss.get("number", "?")
+                title = iss.get("title", "")
+                labels = [l["name"] for l in iss.get("labels", [])]
+                label_str = f" [{', '.join(labels)}]" if labels else ""
+                lines.append(f"- #{number}{label_str}: {title}")
+                count += 1
+                if count >= 15:
+                    break
+            return "\n".join(lines)
+
+        open_text = format_issues(open_issues, "Open Issues")
+        closed_text = format_issues(closed_issues, "Recently Closed")
+        combined = f"## GitHub Issues ({repo})\n\n{open_text}\n\n{closed_text}"
+        return combined
+
+    async def _fetch_releases(self, project: str) -> str | None:
+        repo = ISSUES_REPOS.get(project.lower(), "")
+        if not repo:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{repo}/releases",
+                    params={"per_page": 5},
+                    headers=self._gh_headers(),
+                )
+                if resp.status_code != 200:
+                    logger.error(f"GitHub Releases API 失败: HTTP {resp.status_code}")
+                    return None
+                releases = resp.json()
+        except Exception as e:
+            logger.error(f"GitHub Releases API 异常: {e}")
+            return None
+
+        if not releases:
+            return None
+
+        lines = [f"## Recent Releases ({repo})"]
+        for rel in releases:
+            tag = rel.get("tag_name", "?")
+            name = rel.get("name") or tag
+            published = (rel.get("published_at") or "")[:10]
+            body = (rel.get("body") or "").strip()
+            header = f"### {name} ({published})"
+            if body:
+                body_short = body[:600]
+                if len(body) > 600:
+                    body_short += "\n...(truncated)"
+                header += "\n" + body_short
+            lines.append(header)
+        return "\n\n".join(lines)
+
     # ====== Q&A 处理 ======
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
         indicators = [
-            "?", "？", "怎么", "如何", "为什么", "能不能", "可以不",
-            "有没有", "是什么", "是谁", "在哪", "怎么办", "请问",
-            "问一下", "请教", "求助", "帮我看", "帮我",
-            "啥", "吗", "呢", "吧",
+            "?",
+            "？",
+            "怎么",
+            "如何",
+            "为什么",
+            "能不能",
+            "可以不",
+            "有没有",
+            "是什么",
+            "是谁",
+            "在哪",
+            "怎么办",
+            "请问",
+            "问一下",
+            "请教",
+            "求助",
+            "帮我看",
+            "帮我",
         ]
         return any(i in text for i in indicators)
 
@@ -156,19 +296,23 @@ class QaHelperPlugin(NcatBotPlugin):
         if not text or text.startswith("/"):
             return
 
-        # @bot 检查
+        # @bot / @others 检查
         bot_qq = await self._get_bot_qq()
         is_at_bot = False
+        has_at_others = False
         for seg in event.message:
             if getattr(seg, "msg_seg_type", None) == "at":
                 qq = str(getattr(seg, "qq", "") or getattr(seg, "user_id", ""))
                 if qq == bot_qq:
                     is_at_bot = True
-                    break
+                elif qq:
+                    has_at_others = True
 
         question = self._clean_question(event)
 
         if not is_at_bot:
+            if has_at_others:
+                return
             if not question or not self._looks_like_question(question):
                 return
             if not is_llm_configured():
@@ -177,7 +321,8 @@ class QaHelperPlugin(NcatBotPlugin):
             try:
                 recent = await self.api.get_group_msg_history(group_id, count=6)
                 prev = [
-                    m for m in recent
+                    m
+                    for m in recent
                     if m.time < event.time and m.message_id != event.message_id
                 ]
                 if prev:
@@ -188,7 +333,9 @@ class QaHelperPlugin(NcatBotPlugin):
                 pass
             if not await get_llm().judge_question(cfg.project, question, ctx):
                 return
-            logger.info(f"QA 触发（LLM判定）: group={group_id}, question={question[:100]}")
+            logger.info(
+                f"QA 触发（LLM判定）: group={group_id}, question={question[:100]}"
+            )
 
         if not question:
             await event.reply("请问具体问题是什么？")
@@ -214,7 +361,7 @@ class QaHelperPlugin(NcatBotPlugin):
                 if t:
                     parts.append(t)
         text = " ".join(parts).strip()
-        text = re.sub(r'^/\S+\s*', '', text)
+        text = re.sub(r"^/\S+\s*", "", text)
         return text.strip()
 
     # ====== 管理命令 ======
@@ -224,8 +371,12 @@ class QaHelperPlugin(NcatBotPlugin):
             self.groups[group_id] = QAGroupConfig()
         return self.groups[group_id]
 
-    @command_registry.command("qa_llm", description="[root] 配置 LLM API（私聊，全局共享）")
-    async def cmd_llm(self, event: PrivateMessageEvent, base_url: str, api_key: str, model: str):
+    @command_registry.command(
+        "qa_llm", description="[root] 配置 LLM API（私聊，全局共享）"
+    )
+    async def cmd_llm(
+        self, event: PrivateMessageEvent, base_url: str, api_key: str, model: str
+    ):
         if event.message_type != "private":
             await event.reply("请私聊使用此命令")
             return
@@ -239,10 +390,29 @@ class QaHelperPlugin(NcatBotPlugin):
         save_llm_config(cfg)
         await event.reply(f"LLM 配置已更新: {model} @ {base_url}")
 
+    @command_registry.command(
+        "qa_ghtoken", description="[root] 配置 GitHub Token（私聊，提高 API 额度）"
+    )
+    async def cmd_ghtoken(self, event: PrivateMessageEvent, token: str = ""):
+        if event.message_type != "private":
+            await event.reply("请私聊使用此命令")
+            return
+        if not self.rbac_manager.user_has_role(str(event.user_id), "root"):
+            await event.reply("需要 root 权限")
+            return
+        if not token:
+            self._save_gh_token("")
+            await event.reply("GitHub Token 已清除")
+        else:
+            self._save_gh_token(token)
+            await event.reply("GitHub Token 已更新")
+
     @command_registry.command("qa", description="[管理员] Q&A 问答 on/off [项目名]")
     @param(name="action", default="on", help="on 或 off")
     @param(name="project", default="", help="项目名 M9A 或 MaaEnd")
-    async def cmd_enable(self, event: GroupMessageEvent, action: str = "on", project: str = ""):
+    async def cmd_enable(
+        self, event: GroupMessageEvent, action: str = "on", project: str = ""
+    ):
         if not await self._is_group_admin(event.group_id, event.user_id):
             await event.reply("需要群主或管理员权限")
             return
@@ -300,7 +470,11 @@ class QaHelperPlugin(NcatBotPlugin):
         if not prompt:
             cfg.system_prompt = ""
             self._save_config()
-            cache_path = self.workspace / f"cache_{cfg.project.lower()}.txt" if cfg.project else None
+            cache_path = (
+                self.workspace / f"cache_{cfg.project.lower()}.txt"
+                if cfg.project
+                else None
+            )
             if cache_path and cache_path.exists():
                 await event.reply("提示词已清除，将使用文档缓存")
             else:
@@ -323,7 +497,11 @@ class QaHelperPlugin(NcatBotPlugin):
             if cfg.system_prompt:
                 lines.append(f"  提示词: 自定义 ({len(cfg.system_prompt)} 字符)")
             else:
-                cache_path = self.workspace / f"cache_{cfg.project.lower()}.txt" if cfg.project else None
+                cache_path = (
+                    self.workspace / f"cache_{cfg.project.lower()}.txt"
+                    if cfg.project
+                    else None
+                )
                 if cache_path and cache_path.exists():
                     size = len(cache_path.read_text("utf-8").encode("utf-8")) / 1024
                     lines.append(f"  提示词: 文档缓存 ({size:.0f}KB)")
@@ -331,6 +509,7 @@ class QaHelperPlugin(NcatBotPlugin):
                     lines.append(f"  提示词: 未抓取")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
+        lines.append(f"GitHub Token: {'已配置' if self._load_gh_token() else '未配置'}")
         await event.reply("\n".join(lines))
 
 

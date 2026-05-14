@@ -202,13 +202,16 @@ class GroupSummaryPlugin(NcatBotPlugin):
         image_path = await self._render_to_image(md_text, group_id)
         if image_path:
             try:
-                upload_name = f"群聊总结_{datetime.now().strftime('%m%d_%H%M')}.png"
-                await self.api.upload_group_file(group_id, str(image_path.resolve()), upload_name, folder="")
+                cq_image = f"[CQ:image,file=file:///{image_path.resolve().as_posix()}]"
+                await self.api.post_group_msg(group_id, text=cq_image)
                 image_path.unlink(missing_ok=True)
                 return
             except Exception as e:
-                logger.error(f"上传总结图片失败: {e}")
-                image_path.unlink(missing_ok=True)
+                logger.error(f"发送总结图片失败: {e}")
+                try:
+                    image_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
         # fallback 文本
         await self.api.post_group_msg(group_id, text=md_text[:2000])
 

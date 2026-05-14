@@ -3,10 +3,13 @@
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 
-from ncatbot.plugin_system import NcatBotPlugin, command_registry, param, on_message
+import markdown
+from ncatbot.plugin_system import NcatBotPlugin, command_registry, param
 from ncatbot.core.event import GroupMessageEvent
 from ncatbot.utils import get_log
+from playwright.async_api import async_playwright
 
 from plugins._ai import get_llm, is_llm_configured
 from .config import SummaryGroupConfig
@@ -15,12 +18,11 @@ logger = get_log("Summary")
 
 SUMMARY_SYSTEM = (
     "你是群聊总结助手。根据提供的群聊记录，总结讨论内容。\n\n"
-    "输出格式：\n"
-    "📊 群聊总结 ({msg_count} 条消息)\n\n"
-    "💬 讨论话题\n"
-    "- 话题1：简要描述（参与人）\n"
-    "- 话题2：...\n\n"
-    "🔑 关键结论\n"
+    "用 Markdown 格式输出，不要用代码块包裹：\n\n"
+    "## 💬 讨论话题\n\n"
+    "- **话题1**：简要描述（参与人）\n"
+    "- **话题2**：...\n\n"
+    "## 🔑 关键结论\n\n"
     "- 要点1\n"
     "- 要点2\n\n"
     "要求：简洁，每个话题一句话。无实质讨论则不编造。"
@@ -28,11 +30,44 @@ SUMMARY_SYSTEM = (
 
 ISSUE_TRACK_PROMPT = (
     "\n\n另外，群里有人提到项目使用疑问或遇到了 bug/报错时，请在末尾追加：\n\n"
-    "🐛 问题追踪\n\n"
-    "每条问题格式：\n"
-    "- [时间 HH:MM] 报告者：问题描述 | 证据：有（日志/截图/报错信息简述）或无\n\n"
+    "## 🐛 问题追踪\n\n"
+    "| 时间 | 报告者 | 问题描述 | 证据 |\n"
+    "|------|--------|----------|------|\n"
+    "| HH:MM | 昵称 | 问题简述 | 有/无（简述） |\n\n"
     "要求：只记录明确的问题报告，闲聊不算。"
 )
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+body {
+  font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei", sans-serif;
+  background: #f8f9fa; margin: 0; padding: 24px;
+}
+.card {
+  max-width: 720px; margin: 0 auto;
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 28px 32px;
+}
+h1 { font-size: 22px; color: #1a1a2e; margin: 0 0 16px 0; border-bottom: 2px solid #eee; padding-bottom: 12px; }
+h2 { font-size: 17px; color: #333; margin: 20px 0 8px 0; }
+p, li { font-size: 15px; color: #444; line-height: 1.7; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+th { background: #f0f0f5; text-align: left; padding: 6px 8px; }
+td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+strong { color: #1a1a2e; }
+.footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid #eee; font-size: 12px; color: #999; text-align: right; }
+</style>
+</head>
+<body>
+<div class="card">
+{content}
+<div class="footer">37Bot 群聊总结 · {date}</div>
+</div>
+</body>
+</html>"""
 
 
 class GroupSummaryPlugin(NcatBotPlugin):
@@ -43,6 +78,8 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
     async def on_load(self):
         self.config_path = self.workspace / "config.json"
+        self.data_dir = self.workspace / "images"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.groups: dict[str, SummaryGroupConfig] = self._load_config()
         self._name_cache: dict[str, str] = {}
         asyncio.create_task(self._auto_summary_loop())
@@ -118,24 +155,68 @@ class GroupSummaryPlugin(NcatBotPlugin):
             lines.append(f"[{m.time}] [{name}]: {m.raw_message}")
         chat_text = "\n".join(lines)
 
-        system_prompt = SUMMARY_SYSTEM.format(msg_count=len(recent))
+        system_prompt = SUMMARY_SYSTEM
         if cfg.track_issues:
             system_prompt += ISSUE_TRACK_PROMPT
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"请总结以下群聊：\n\n{chat_text}"},
+            {"role": "user", "content": f"请总结以下 {len(recent)} 条群聊消息：\n\n{chat_text}"},
         ]
 
         reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000)
         return reply
+
+    async def _render_to_image(self, md_text: str) -> Path | None:
+        """Markdown 转 PNG 图片"""
+        html_body = markdown.markdown(
+            md_text, extensions=["tables", "fenced_code", "nl2br"]
+        )
+        html = HTML_TEMPLATE.format(
+            content=html_body,
+            date=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+        png_path = self.data_dir / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page(viewport={"width": 780, "height": 600})
+                await page.set_content(html, wait_until="networkidle")
+                # 获取实际内容高度
+                body = await page.query_selector(".card")
+                if body:
+                    box = await body.bounding_box()
+                    if box:
+                        await page.set_viewport_size({"width": 780, "height": int(box["height"]) + 48})
+                await page.screenshot(path=str(png_path), full_page=True)
+                await browser.close()
+            return png_path
+        except Exception as e:
+            logger.error(f"渲染图片失败: {e}")
+            return None
+
+    async def _send_summary(self, group_id: str, md_text: str):
+        """发送总结：优先图片，失败回退文本"""
+        image_path = await self._render_to_image(md_text)
+        if image_path:
+            try:
+                upload_name = f"群聊总结_{datetime.now().strftime('%m%d_%H%M')}.png"
+                await self.api.upload_group_file(group_id, str(image_path), upload_name)
+                image_path.unlink(missing_ok=True)
+                return
+            except Exception as e:
+                logger.error(f"上传总结图片失败: {e}")
+                image_path.unlink(missing_ok=True)
+        # fallback 文本
+        await self.api.post_group_msg(group_id, text=md_text[:2000])
 
     # ====== 定时任务 ======
 
     async def _auto_summary_loop(self):
         await asyncio.sleep(30)
         while True:
-            await asyncio.sleep(300)  # 每 5 分钟检查
+            await asyncio.sleep(300)
             now = datetime.now()
             today = now.strftime("%Y-%m-%d")
             for group_id, cfg in self.groups.items():
@@ -145,7 +226,6 @@ class GroupSummaryPlugin(NcatBotPlugin):
                     continue
                 if now.hour != cfg.auto_hour:
                     continue
-                # 只在目标小时的第一个 5 分钟内触发
                 if now.minute >= 10:
                     continue
                 if not is_llm_configured():
@@ -153,7 +233,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
                 logger.info(f"定时总结: group={group_id}")
                 reply = await self._do_summary(group_id, cfg)
                 if reply:
-                    await self.api.post_group_msg(group_id, text=reply)
+                    await self._send_summary(group_id, reply)
                 cfg.last_summary_date = today
                 self._save_config()
 
@@ -175,7 +255,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
         await event.reply(f"正在总结最近 {cfg.message_count} 条消息...")
         reply = await self._do_summary(group_id, cfg)
         if reply:
-            await event.reply(reply)
+            await self._send_summary(group_id, reply)
         else:
             await event.reply("总结失败，请稍后重试")
 

@@ -1,5 +1,6 @@
 """MirrorChyan 软件更新检测插件"""
 
+import asyncio
 import re
 import json
 from pathlib import Path
@@ -281,7 +282,19 @@ class MirrorChyanPlugin(NcatBotPlugin):
                 await self.api.post_group_msg(group_id, text=f"群文件已存在: {upload_name}，跳过上传")
                 return
 
-            await self.api.upload_group_file(group_id, save_path, upload_name, folder=folder_id)
+            try:
+                await self.api.upload_group_file(group_id, save_path, upload_name, folder=folder_id)
+            except Exception as ue:
+                if type(ue).__name__ == "Empty":
+                    # QQ 上传是异步的，返回空不代表失败，等一等再确认
+                    for delay in (10, 20, 30):
+                        await asyncio.sleep(delay)
+                        if await self._file_exists_in_folder(group_id, folder_id, upload_name):
+                            await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}")
+                            return
+                    await self.api.post_group_msg(group_id, text=f"自动上传中: {upload_name}，请稍后检查群文件")
+                    return
+                raise
             await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}")
         except Exception as e:
             err_msg = str(e) or repr(e)

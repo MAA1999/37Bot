@@ -306,12 +306,14 @@ class GroupSummaryPlugin(NcatBotPlugin):
             if arg.lower() == "today":
                 date_filter = datetime.now().strftime("%Y-%m-%d")
                 await event.reply(f"正在总结今日 ({date_filter}) 群聊...")
-            elif len(arg) == 10 and arg[4] == "-":
-                date_filter = arg
-                await event.reply(f"正在总结 {date_filter} 群聊...")
             else:
-                cfg.message_count = 200
-                await event.reply(f"正在总结最近 {cfg.message_count} 条消息...")
+                try:
+                    dt = datetime.strptime(arg, "%Y-%m-%d")
+                    date_filter = dt.strftime("%Y-%m-%d")
+                    await event.reply(f"正在总结 {date_filter} 群聊...")
+                except ValueError:
+                    cfg.message_count = 200
+                    await event.reply(f"正在总结最近 {cfg.message_count} 条消息...")
 
         reply = await self._do_summary(group_id, cfg, date_filter=date_filter)
         if reply:

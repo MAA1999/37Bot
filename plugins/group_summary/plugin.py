@@ -202,7 +202,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
         if image_path:
             try:
                 upload_name = f"群聊总结_{datetime.now().strftime('%m%d_%H%M')}.png"
-                await self.api.upload_group_file(group_id, str(image_path), upload_name)
+                await self.api.upload_group_file(group_id, str(image_path), upload_name, folder="")
                 image_path.unlink(missing_ok=True)
                 return
             except Exception as e:

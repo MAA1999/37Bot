@@ -546,7 +546,7 @@ class QaHelperPlugin(NcatBotPlugin):
             await event.reply("支持: add / list / remove / clear")
 
     @command_registry.command("llm_health", description="查看各模型健康状态")
-    async def cmd_health(self, event):
+    async def cmd_health(self, event: GroupMessageEvent):
         cfg = load_llm_config()
         status = get_health_status()
         lines = [f"主模型: {cfg.model} @ {cfg.base_url}"]

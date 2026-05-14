@@ -46,6 +46,7 @@ class QaHelperPlugin(NcatBotPlugin):
         self.config_path = self.workspace / "config.json"
         self.groups: dict[str, QAGroupConfig] = self._load_config()
         self._bot_qq: str | None = None
+        self._name_cache: dict[str, str] = {}
         asyncio.create_task(self._auto_refresh_loop())
 
     async def _auto_refresh_loop(self):
@@ -117,6 +118,19 @@ class QaHelperPlugin(NcatBotPlugin):
         if self._bot_qq is None:
             self._bot_qq = str(ncatbot_config.bt_uin)
         return self._bot_qq
+
+    async def _resolve_user_name(self, group_id: str, user_id: str) -> str:
+        cache_key = f"{group_id}_{user_id}"
+        if cache_key in self._name_cache:
+            return self._name_cache[cache_key]
+        try:
+            info = await self.api.get_group_member_info(group_id, user_id)
+            name = info.card or info.nickname or user_id
+        except Exception:
+            name = user_id
+        display = f"{name}({user_id})"
+        self._name_cache[cache_key] = display
+        return display
 
     # ====== GitHub Token ======
 
@@ -333,6 +347,25 @@ class QaHelperPlugin(NcatBotPlugin):
                 elif qq:
                     has_at_others = True
 
+        # 拉取上下文（@bot 与非 @bot 都带）
+        ctx = ""
+        try:
+            recent = await self.api.get_group_msg_history(group_id, count=6)
+            prev = [
+                m
+                for m in recent
+                if m.time < event.time and m.message_id != event.message_id
+            ]
+            if prev:
+                lines = []
+                for m in reversed(prev[-3:]):
+                    name = await self._resolve_user_name(group_id, str(m.user_id))
+                    lines.append(f"[{name}]: {m.raw_message}")
+                ctx = "\n".join(lines)
+        except Exception:
+            pass
+
+        sender_name = await self._resolve_user_name(group_id, str(event.user_id))
         question = self._clean_question(event)
 
         if not is_at_bot:
@@ -342,24 +375,10 @@ class QaHelperPlugin(NcatBotPlugin):
                 return
             if not is_llm_configured():
                 return
-            ctx = ""
-            try:
-                recent = await self.api.get_group_msg_history(group_id, count=6)
-                prev = [
-                    m
-                    for m in recent
-                    if m.time < event.time and m.message_id != event.message_id
-                ]
-                if prev:
-                    ctx = "\n".join(
-                        f"[{m.user_id}]: {m.raw_message}" for m in reversed(prev[-3:])
-                    )
-            except Exception:
-                pass
             if not await get_llm().judge_question(cfg.project, question, ctx):
                 return
             logger.info(
-                f"QA 触发（LLM判定）: group={group_id}, question={question[:100]}"
+                f"QA 触发（LLM判定）: group={group_id}, user={sender_name}, question={question[:100]}"
             )
 
         if not question:
@@ -370,8 +389,9 @@ class QaHelperPlugin(NcatBotPlugin):
             await event.reply("LLM 尚未配置，请联系管理员。")
             return
 
+        full_question = f"提问者: {sender_name}\n{question}"
         system_prompt = self._get_system_prompt(cfg)
-        answer = await get_llm().answer_question(question, system_prompt)
+        answer = await get_llm().answer_question(full_question, system_prompt, ctx)
         if answer:
             await event.reply(answer)
         else:

@@ -110,14 +110,18 @@ class LLMClient:
 
         return reply.strip().startswith("是")
 
-    async def answer_question(self, question: str, system_prompt: str) -> str | None:
+    async def answer_question(self, question: str, system_prompt: str, context: str = "") -> str | None:
         """回答项目相关问题。"""
         if not system_prompt:
             system_prompt = "你是一个项目知识库助手。请根据你的知识回答问题。如果不知道，直接说不知道。"
 
+        user_content = question
+        if context:
+            user_content = f"群聊上下文：\n{context}\n\n问题：{question}"
+
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
+            {"role": "user", "content": user_content},
         ]
 
         return await self.chat(messages, temperature=0.3, max_tokens=1000)

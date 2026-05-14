@@ -194,7 +194,25 @@ class QaHelperPlugin(NcatBotPlugin):
                     parts.append(cache_path.read_text("utf-8").strip())
                 except Exception:
                     pass
-        return "\n\n=====\n\n".join(parts) if parts else ""
+        if not parts:
+            return ""
+
+        result = parts[0]
+        for i, p in enumerate(cfg.projects[1:], 1):
+            if i >= len(parts):
+                break
+            content = self._strip_identity_header(parts[i])
+            result += f"\n\n=====\n\n## {p.upper()} 参考\n\n{content}"
+        return result
+
+    @staticmethod
+    def _strip_identity_header(text: str) -> str:
+        """去掉缓存里的项目助手身份声明，只留文档内容。"""
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if line.strip() == "---":
+                return "\n".join(lines[i + 1:]).strip()
+        return text
 
     @staticmethod
     def _strip_frontmatter(text: str) -> str:

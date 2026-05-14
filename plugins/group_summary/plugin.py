@@ -209,7 +209,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
             {"role": "user", "content": f"请总结以下 {len(recent)} 条群聊消息：\n\n{chat_text}"},
         ]
 
-        reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000, stream=False, timeout=180)
+        reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000, timeout=300)
         return reply
 
     async def _render_to_image(self, md_text: str, group_id: str) -> Path | None:

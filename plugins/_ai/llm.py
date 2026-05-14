@@ -25,7 +25,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float = 0.1,
         max_tokens: int = 500,
-        stream: bool = False,
+        stream: bool = True,
         timeout: float = 30,
     ) -> str | None:
         """发送聊天请求，返回回复文本。失败返回 None。"""

@@ -46,6 +46,31 @@ class QaHelperPlugin(NcatBotPlugin):
         self.config_path = self.workspace / "config.json"
         self.groups: dict[str, QAGroupConfig] = self._load_config()
         self._bot_qq: str | None = None
+        asyncio.create_task(self._auto_refresh_loop())
+
+    async def _auto_refresh_loop(self):
+        await asyncio.sleep(30)  # 等待插件初始化完成
+        while True:
+            await asyncio.sleep(1800)
+            await self._refresh_all()
+
+    async def _refresh_all(self):
+        projects = set()
+        for cfg in self.groups.values():
+            if cfg.enabled and cfg.project:
+                projects.add(cfg.project.lower())
+        for project in projects:
+            try:
+                prompt = await self._fetch_docs(project)
+                if prompt:
+                    cache_path = self.workspace / f"cache_{project}.txt"
+                    cache_path.write_text(prompt, encoding="utf-8")
+                    size_kb = len(prompt.encode("utf-8")) / 1024
+                    logger.info(f"自动刷新 {project} 完成 ({size_kb:.0f}KB)")
+                else:
+                    logger.warning(f"自动刷新 {project} 失败")
+            except Exception as e:
+                logger.error(f"自动刷新 {project} 异常: {e}")
 
     def _load_config(self) -> dict[str, QAGroupConfig]:
         if self.config_path.exists():

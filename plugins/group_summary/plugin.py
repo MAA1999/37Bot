@@ -202,7 +202,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
         image_path = await self._render_to_image(md_text, group_id)
         if image_path:
             try:
-                cq_image = f"[CQ:image,file=file:///{image_path.resolve().as_posix()}]"
+                cq_image = f"[CQ:image,file={image_path.resolve().as_posix()}]"
                 await self.api.post_group_msg(group_id, text=cq_image)
                 image_path.unlink(missing_ok=True)
                 return

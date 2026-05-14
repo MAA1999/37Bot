@@ -182,14 +182,6 @@ class GroupSummaryPlugin(NcatBotPlugin):
             if not recent:
                 return None
 
-        # 超过 1000 条时均匀采样，避免 exceed 上下文窗口
-        MAX_FOR_LLM = 2000
-        total = len(recent)
-        if total > MAX_FOR_LLM:
-            step = total / MAX_FOR_LLM
-            recent = [recent[int(i * step)] for i in range(MAX_FOR_LLM)]
-            logger.info(f"消息采样: {total}条 → {len(recent)}条")
-
         lines = []
         for m in reversed(recent):
             name = await self._resolve_user_name(group_id, str(m.user_id))

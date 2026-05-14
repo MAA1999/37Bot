@@ -20,6 +20,7 @@ class HelpPlugin(NcatBotPlugin):
         "todo": "待办",
         "sensitivemonitor": "敏感词监测",
         "qahelper": "Q&A问答",
+        "groupsummary": "群聊总结",
     }
 
     def _get_plugin_display_name(self, plugin_name: str) -> str:

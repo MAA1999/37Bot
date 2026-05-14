@@ -97,7 +97,7 @@ class LLMClient:
         )
         if context:
             user_prompt += f"\n\n群聊上下文：\n{context}"
-        user_prompt += "\n\n这条消息是否在询问关于该项目的问题？只回答「是」或「否」。"
+        user_prompt += "\n\n这条消息是否在询问关于上述项目的问题？只回答「是」或「否」。"
 
         messages = [
             {"role": "system", "content": system_prompt},

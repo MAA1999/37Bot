@@ -28,12 +28,31 @@ DOCS_URLS: dict[str, list[str]] = {
         "https://raw.githubusercontent.com/MaaEnd/MaaEnd/v2/README.md",
         "https://raw.githubusercontent.com/MaaEnd/MaaEnd/v2/docs/zh_cn/users/troubleshooting.md",
     ],
+    "mxu": [
+        "https://raw.githubusercontent.com/MistEO/MXU/main/README.md",
+        "https://raw.githubusercontent.com/MistEO/MXU/main/docs/add-special-task.md",
+    ],
+    "mfaa": [
+        "https://raw.githubusercontent.com/SweetSmellFox/MFAAvalonia/master/README.md",
+        "https://raw.githubusercontent.com/SweetSmellFox/MFAAvalonia/master/docs/zh/外部通知.md",
+        "https://raw.githubusercontent.com/SweetSmellFox/MFAAvalonia/master/docs/zh/自定义布局.md",
+    ],
 }
 
 ISSUES_REPOS: dict[str, str] = {
     "m9a": "MAA1999/M9A",
     "maaend": "MaaEnd/MaaEnd",
+    "mxu": "MistEO/MXU",
+    "mfaa": "SweetSmellFox/MFAAvalonia",
 }
+
+PROJECT_ALIASES: dict[str, str] = {
+    "mfa": "mfaa",
+    "mfaavalonia": "mfaa",
+}
+
+def _normalize_project(name: str) -> str:
+    return PROJECT_ALIASES.get(name.lower(), name.lower())
 
 
 class QaHelperPlugin(NcatBotPlugin):
@@ -58,8 +77,8 @@ class QaHelperPlugin(NcatBotPlugin):
     async def _refresh_all(self):
         projects = set()
         for cfg in self.groups.values():
-            if cfg.enabled and cfg.project:
-                projects.add(cfg.project.lower())
+            if cfg.enabled:
+                projects.update(p.lower() for p in cfg.projects)
         for project in projects:
             try:
                 prompt = await self._fetch_docs(project)
@@ -77,14 +96,21 @@ class QaHelperPlugin(NcatBotPlugin):
         if self.config_path.exists():
             try:
                 data = json.loads(self.config_path.read_text("utf-8"))
-                return {
-                    gid: QAGroupConfig(
+                result = {}
+                for gid, g in data.items():
+                    proj = g.get("projects")
+                    if proj:
+                        projects = [p for p in proj if isinstance(p, str)]
+                    elif g.get("project"):
+                        projects = [_normalize_project(g["project"])]
+                    else:
+                        projects = []
+                    result[gid] = QAGroupConfig(
                         enabled=g.get("enabled", False),
-                        project=g.get("project", ""),
+                        projects=projects,
                         system_prompt=g.get("system_prompt", ""),
                     )
-                    for gid, g in data.items()
-                }
+                return result
             except Exception:
                 pass
         return {}
@@ -95,7 +121,7 @@ class QaHelperPlugin(NcatBotPlugin):
                 {
                     gid: {
                         "enabled": g.enabled,
-                        "project": g.project,
+                        "projects": g.projects,
                         "system_prompt": g.system_prompt,
                     }
                     for gid, g in self.groups.items()
@@ -160,14 +186,15 @@ class QaHelperPlugin(NcatBotPlugin):
     def _get_system_prompt(self, cfg: QAGroupConfig) -> str:
         if cfg.system_prompt:
             return cfg.system_prompt
-        if cfg.project:
-            cache_path = self.workspace / f"cache_{cfg.project.lower()}.txt"
+        parts = []
+        for p in cfg.projects:
+            cache_path = self.workspace / f"cache_{p.lower()}.txt"
             if cache_path.exists():
                 try:
-                    return cache_path.read_text("utf-8").strip()
+                    parts.append(cache_path.read_text("utf-8").strip())
                 except Exception:
                     pass
-        return ""
+        return "\n\n=====\n\n".join(parts) if parts else ""
 
     @staticmethod
     def _strip_frontmatter(text: str) -> str:
@@ -381,7 +408,7 @@ class QaHelperPlugin(NcatBotPlugin):
                 return
             if not is_llm_configured():
                 return
-            if not await get_llm().judge_question(cfg.project, question, ctx):
+            if not await get_llm().judge_question("、".join(cfg.projects), question, ctx):
                 return
             logger.info(
                 f"QA 触发（LLM判定）: group={group_id}, user={sender_name}, question={question[:100]}"
@@ -460,7 +487,7 @@ class QaHelperPlugin(NcatBotPlugin):
 
     @command_registry.command("qa", description="[管理员] Q&A 问答 on/off [项目名]")
     @param(name="action", default="on", help="on 或 off")
-    @param(name="project", default="", help="项目名 M9A 或 MaaEnd")
+    @param(name="project", default="", help="项目名: M9A MaaEnd MXU MFAAvalonia")
     async def cmd_enable(
         self, event: GroupMessageEvent, action: str = "on", project: str = ""
     ):
@@ -473,20 +500,41 @@ class QaHelperPlugin(NcatBotPlugin):
             if not project:
                 await event.reply("请指定项目名，如 /qa on M9A")
                 return
+            p_lower = _normalize_project(project)
+            if p_lower not in DOCS_URLS:
+                await event.reply(f"未知项目: {project}，可用: {', '.join(DOCS_URLS)}")
+                return
+            if p_lower in (p.lower() for p in cfg.projects):
+                await event.reply(f"{project} 已添加，当前项目: {', '.join(cfg.projects)}")
+                return
+            cfg.projects.append(p_lower)
             cfg.enabled = True
-            cfg.project = project
             self._save_config()
-            await event.reply(f"Q&A 已启用: {project}，正在抓取文档...")
-            prompt = await self._fetch_docs(project)
+            await event.reply(f"Q&A 已启用: {', '.join(cfg.projects)}，正在抓取 {project}...")
+            prompt = await self._fetch_docs(p_lower)
             if prompt:
-                cache_path = self.workspace / f"cache_{project.lower()}.txt"
+                cache_path = self.workspace / f"cache_{p_lower}.txt"
                 cache_path.write_text(prompt, encoding="utf-8")
                 size_kb = len(prompt.encode("utf-8")) / 1024
-                await event.reply(f"文档抓取完成 ({size_kb:.0f}KB)，Q&A 就绪")
+                await event.reply(f"{project} 文档抓取完成 ({size_kb:.0f}KB)，Q&A 就绪")
             else:
-                await event.reply("文档抓取失败，请稍后 /qa_refresh 重试")
+                await event.reply(f"{project} 文档抓取失败，请稍后 /qa_refresh 重试")
+        elif project:
+            p_lower = _normalize_project(project)
+            if p_lower in (p.lower() for p in cfg.projects):
+                cfg.projects = [p for p in cfg.projects if p.lower() != p_lower]
+                if not cfg.projects:
+                    cfg.enabled = False
+                self._save_config()
+                if cfg.enabled:
+                    await event.reply(f"已移除 {project}，当前项目: {', '.join(cfg.projects)}")
+                else:
+                    await event.reply(f"已移除 {project}，项目列表为空，Q&A 已禁用")
+            else:
+                await event.reply(f"项目中不存在 {project}")
         else:
             cfg.enabled = False
+            cfg.projects = []
             self._save_config()
             await event.reply("Q&A 已禁用")
 
@@ -497,18 +545,21 @@ class QaHelperPlugin(NcatBotPlugin):
             return
         group_id = str(event.group_id)
         cfg = self.groups.get(group_id)
-        if not cfg or not cfg.project:
+        if not cfg or not cfg.projects:
             await event.reply("本群未启用 Q&A")
             return
-        await event.reply(f"正在重新抓取 {cfg.project} 文档...")
-        prompt = await self._fetch_docs(cfg.project)
-        if prompt:
-            cache_path = self.workspace / f"cache_{cfg.project.lower()}.txt"
-            cache_path.write_text(prompt, encoding="utf-8")
-            size_kb = len(prompt.encode("utf-8")) / 1024
-            await event.reply(f"文档刷新完成 ({size_kb:.0f}KB)")
-        else:
-            await event.reply("文档抓取失败，缓存未更新")
+        projects = ", ".join(cfg.projects)
+        await event.reply(f"正在重新抓取 {projects} 文档...")
+        results = []
+        for p in cfg.projects:
+            prompt = await self._fetch_docs(p)
+            if prompt:
+                cache_path = self.workspace / f"cache_{p}.txt"
+                cache_path.write_text(prompt, encoding="utf-8")
+                results.append(f"{p} OK")
+            else:
+                results.append(f"{p} 失败")
+        await event.reply("\n".join(results))
 
     @command_registry.command("qa_prompt", description="[管理员] 设置/清除自定义提示词")
     @param(name="prompt", default="", help="系统提示词，留空清除（回退到文档缓存）")
@@ -521,12 +572,10 @@ class QaHelperPlugin(NcatBotPlugin):
         if not prompt:
             cfg.system_prompt = ""
             self._save_config()
-            cache_path = (
-                self.workspace / f"cache_{cfg.project.lower()}.txt"
-                if cfg.project
-                else None
-            )
-            if cache_path and cache_path.exists():
+            if any(
+                (self.workspace / f"cache_{p}.txt").exists()
+                for p in cfg.projects
+            ):
                 await event.reply("提示词已清除，将使用文档缓存")
             else:
                 await event.reply("提示词已清除（无回退源，请 /qa_refresh）")
@@ -544,20 +593,20 @@ class QaHelperPlugin(NcatBotPlugin):
             f"  状态: {'启用' if cfg and cfg.enabled else '禁用'}",
         ]
         if cfg and cfg.enabled:
-            lines.append(f"  项目: {cfg.project}")
+            lines.append(f"  项目: {', '.join(cfg.projects) if cfg.projects else '无'}")
             if cfg.system_prompt:
                 lines.append(f"  提示词: 自定义 ({len(cfg.system_prompt)} 字符)")
             else:
-                cache_path = (
-                    self.workspace / f"cache_{cfg.project.lower()}.txt"
-                    if cfg.project
-                    else None
-                )
-                if cache_path and cache_path.exists():
-                    size = len(cache_path.read_text("utf-8").encode("utf-8")) / 1024
-                    lines.append(f"  提示词: 文档缓存 ({size:.0f}KB)")
+                caches = []
+                for p in cfg.projects:
+                    cp = self.workspace / f"cache_{p}.txt"
+                    if cp.exists():
+                        size = len(cp.read_text("utf-8").encode("utf-8")) / 1024
+                        caches.append(f"{p}({size:.0f}KB)")
+                if caches:
+                    lines.append(f"  文档缓存: {', '.join(caches)}")
                 else:
-                    lines.append(f"  提示词: 未抓取")
+                    lines.append(f"  文档缓存: 未抓取")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
         lines.append(f"GitHub Token: {'已配置' if self._load_gh_token() else '未配置'}")

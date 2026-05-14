@@ -6,5 +6,5 @@ from dataclasses import dataclass, field
 @dataclass
 class QAGroupConfig:
     enabled: bool = False
-    project: str = ""
+    projects: list[str] = field(default_factory=list)
     system_prompt: str = ""

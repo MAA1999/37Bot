@@ -64,7 +64,7 @@ strong {{ color: #1a1a2e; }}
 <body>
 <div class="card">
 {content}
-<div class="footer">37Bot 群聊总结 · {date}</div>
+<div class="footer">群 {group_id} · 37Bot 群聊总结 · {date}</div>
 </div>
 </body>
 </html>"""
@@ -167,13 +167,14 @@ class GroupSummaryPlugin(NcatBotPlugin):
         reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000)
         return reply
 
-    async def _render_to_image(self, md_text: str) -> Path | None:
+    async def _render_to_image(self, md_text: str, group_id: str) -> Path | None:
         """Markdown 转 PNG 图片"""
         html_body = markdown.markdown(
             md_text, extensions=["tables", "fenced_code", "nl2br"]
         )
         html = HTML_TEMPLATE.format(
             content=html_body,
+            group_id=group_id,
             date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
         png_path = self.data_dir / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
@@ -198,7 +199,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
     async def _send_summary(self, group_id: str, md_text: str):
         """发送总结：优先图片，失败回退文本"""
-        image_path = await self._render_to_image(md_text)
+        image_path = await self._render_to_image(md_text, group_id)
         if image_path:
             try:
                 upload_name = f"群聊总结_{datetime.now().strftime('%m%d_%H%M')}.png"

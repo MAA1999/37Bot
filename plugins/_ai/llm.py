@@ -13,7 +13,7 @@ _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 # ====== 健康追踪 ======
 
-UNHEALTHY_THRESHOLD = 3      # 连续失败 N 次标记不健康
+UNHEALTHY_THRESHOLD = 5      # 连续失败 N 次标记不健康
 COOLDOWN_SECONDS = 300        # 不健康模型 5 分钟后重试
 PROBE_INTERVAL = 300          # 探测间隔 5 分钟
 
@@ -181,7 +181,6 @@ class LLMClient:
         }
 
         last_error = None
-        any_real_failure = False
         for attempt in range(3 if stream else 2):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
@@ -192,8 +191,6 @@ class LLMClient:
                             if resp.status_code != 200:
                                 status = resp.status_code
                                 last_error = f"HTTP {status}"
-                                if status not in (502, 504):
-                                    any_real_failure = True
                                 logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
                                 continue
                             async for line in resp.aiter_lines():
@@ -219,8 +216,6 @@ class LLMClient:
                         if resp.status_code != 200:
                             status = resp.status_code
                             last_error = f"HTTP {status}: {resp.text[:200]}"
-                            if status not in (502, 504):
-                                any_real_failure = True
                             logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
                             continue
                         data = resp.json()
@@ -233,11 +228,9 @@ class LLMClient:
             except Exception as e:
                 ename = type(e).__name__
                 last_error = f"{ename}: {e}"
-                if ename not in ("ReadTimeout", "ReadError"):
-                    any_real_failure = True
                 logger.error(f"LLM 请求异常 ({model} attempt {attempt + 1}): {last_error}")
 
-        return (None, not any_real_failure)
+        return (None, False)
 
     async def judge_sensitive(self, message_text: str, context: str = "") -> tuple[bool, str]:
         """判断消息是否包含政治敏感内容。返回 (is_sensitive, reason)。"""

@@ -139,15 +139,24 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
     # ====== 核心 ======
 
-    async def _do_summary(self, group_id: str, cfg: SummaryGroupConfig) -> str | None:
+    async def _do_summary(self, group_id: str, cfg: SummaryGroupConfig,
+                          date_filter: str = "") -> str | None:
+        """生成总结。date_filter = 'YYYY-MM-DD' 时只取当天消息。"""
+        fetch_count = max(cfg.message_count, 3000) if date_filter else cfg.message_count
         try:
-            recent = await self.api.get_group_msg_history(group_id, count=cfg.message_count)
+            recent = await self.api.get_group_msg_history(group_id, count=fetch_count)
         except Exception as e:
             logger.error(f"获取消息历史失败: {e}")
             return None
 
         if not recent:
             return None
+
+        # 日期过滤
+        if date_filter:
+            recent = [m for m in recent if str(m.time).startswith(date_filter)]
+            if not recent:
+                return None
 
         lines = []
         for m in reversed(recent):
@@ -243,25 +252,36 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
     # ====== 命令 ======
 
-    @command_registry.command("summary", description="总结最近群聊 [消息数]")
-    @param(name="count", default="200", help="总结的消息数量")
-    async def cmd_summary(self, event: GroupMessageEvent, count: str = "200"):
+    @command_registry.command("summary", description="总结群聊 [消息数|today|日期]")
+    @param(name="arg", default="200", help="消息数量 / today / 日期 YYYY-MM-DD")
+    async def cmd_summary(self, event: GroupMessageEvent, arg: str = "200"):
         group_id = str(event.group_id)
         cfg = self._get_cfg(group_id)
         if not is_llm_configured():
             await event.reply("LLM 尚未配置")
             return
+
+        date_filter = ""
         try:
-            n = int(count)
+            n = int(arg)
+            cfg.message_count = max(20, min(n, 2000))
+            await event.reply(f"正在总结最近 {cfg.message_count} 条消息...")
         except ValueError:
-            n = 200
-        cfg.message_count = max(20, min(n, 2000))
-        await event.reply(f"正在总结最近 {cfg.message_count} 条消息...")
-        reply = await self._do_summary(group_id, cfg)
+            if arg.lower() == "today":
+                date_filter = datetime.now().strftime("%Y-%m-%d")
+                await event.reply(f"正在总结今日 ({date_filter}) 群聊...")
+            elif len(arg) == 10 and arg[4] == "-":
+                date_filter = arg
+                await event.reply(f"正在总结 {date_filter} 群聊...")
+            else:
+                cfg.message_count = 200
+                await event.reply(f"正在总结最近 {cfg.message_count} 条消息...")
+
+        reply = await self._do_summary(group_id, cfg, date_filter=date_filter)
         if reply:
             await self._send_summary(group_id, reply)
         else:
-            await event.reply("总结失败，请稍后重试")
+            await event.reply("总结失败，当天无消息或获取超时")
 
     @command_registry.command("summary_on", description="[管理员] 开启每日定时总结")
     async def cmd_on(self, event: GroupMessageEvent):

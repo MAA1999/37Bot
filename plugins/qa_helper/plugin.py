@@ -144,7 +144,9 @@ class QaHelperPlugin(NcatBotPlugin):
         return ""
 
     def _save_gh_token(self, token: str):
-        (self.workspace / "github_token.txt").write_text(token.strip(), encoding="utf-8")
+        (self.workspace / "github_token.txt").write_text(
+            token.strip(), encoding="utf-8"
+        )
 
     def _gh_headers(self) -> dict:
         h = {"User-Agent": "37Bot-QA", "Accept": "application/vnd.github.v3+json"}
@@ -222,7 +224,13 @@ class QaHelperPlugin(NcatBotPlugin):
                 async with httpx.AsyncClient(timeout=30) as client:
                     resp = await client.get(
                         f"https://api.github.com/repos/{repo}/issues",
-                        params={"state": state, "sort": "updated", "direction": "desc", "per_page": per_page, "filter": "all"},
+                        params={
+                            "state": state,
+                            "sort": "updated",
+                            "direction": "desc",
+                            "per_page": per_page,
+                            "filter": "all",
+                        },
                         headers=headers,
                     )
                     if resp.status_code != 200:
@@ -300,8 +308,6 @@ class QaHelperPlugin(NcatBotPlugin):
     @staticmethod
     def _looks_like_question(text: str) -> bool:
         indicators = [
-            "?",
-            "？",
             "怎么",
             "如何",
             "为什么",

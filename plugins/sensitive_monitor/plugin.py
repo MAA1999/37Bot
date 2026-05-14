@@ -12,7 +12,9 @@ from .config import SensitiveGroupConfig
 logger = get_log("Sensitive")
 
 RECENT_PROCESSED: set[str] = set()
+RECENT_SENSITIVE: set[str] = set()
 MAX_RECENT = 500
+MIN_TEXT_LENGTH = 4
 
 
 class SensitiveMonitorPlugin(NcatBotPlugin):
@@ -73,12 +75,15 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         text = (event.raw_message or "").strip()
         if not text or text.startswith("/"):
             return
+        if len(text) < MIN_TEXT_LENGTH:
+            return
 
         if event.message_id in RECENT_PROCESSED:
             return
         RECENT_PROCESSED.add(event.message_id)
         if len(RECENT_PROCESSED) > MAX_RECENT:
             RECENT_PROCESSED.clear()
+            RECENT_SENSITIVE.clear()
 
         if not is_llm_configured():
             return
@@ -88,7 +93,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             recent = await self.api.get_group_msg_history(group_id, count=10)
             prev = [
                 m for m in recent
-                if m.time < event.time and m.message_id != event.message_id
+                if m.time < event.time
+                and m.message_id != event.message_id
+                and str(m.message_id) not in RECENT_SENSITIVE
             ]
             if prev:
                 context = "\n".join(
@@ -99,6 +106,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
 
         is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
+            RECENT_SENSITIVE.add(event.message_id)
             logger.info(f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}")
             await self._notify(cfg, group_id, str(event.user_id), text, reason)
 

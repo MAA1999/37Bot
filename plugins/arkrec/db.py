@@ -130,7 +130,7 @@ class ArkRecDB:
         if mode:
             sql += " AND operationType = ?"
             params.append(mode)
-        sql += " ORDER BY date_created DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY _id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._connect() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
@@ -138,7 +138,7 @@ class ArkRecDB:
     def query_latest(self, limit: int = 20) -> list[dict]:
         with self._connect() as c:
             return [dict(r) for r in c.execute(
-                "SELECT * FROM records ORDER BY date_created DESC LIMIT ?", (limit,)
+                "SELECT * FROM records ORDER BY _id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
     def get_record_count(self) -> int:

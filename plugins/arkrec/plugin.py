@@ -167,6 +167,29 @@ class ArkRecPlugin(NcatBotPlugin):
             f"链接: {r.get('url', '')}"
         )
 
+    # ====== 关卡名称解析 ======
+
+    @staticmethod
+    def _normalize_op(name: str) -> str:
+        """去符号去空格统一大写，H17-4 → H174, GT-HX-1 → GTHX1"""
+        return re.sub(r"[^A-Za-z0-9]", "", name).upper()
+
+    def _resolve_operation(self, kw: str) -> str:
+        """将简写解析为标准关卡号，如 h174 → H17-4"""
+        upper = kw.upper().replace(" ", "-")
+        ops = self.db.query_operations(keyword="")
+        # 先精确匹配
+        for op in ops:
+            if op["operation"] == upper:
+                return upper
+        # 归一化匹配，歧义时选短前缀
+        norm = self._normalize_op(kw)
+        matches = [op for op in ops if self._normalize_op(op["operation"]) == norm]
+        if matches:
+            matches.sort(key=lambda o: len(o["operation"].split("-")[0]))
+            return matches[0]["operation"]
+        return upper
+
     # ====== 命令 ======
 
     @command_registry.command("arkrec_config", description="[root] 配置账号（私聊）")
@@ -201,16 +224,15 @@ class ArkRecPlugin(NcatBotPlugin):
 
         parts = [p for p in [p1, p2, p3, p4] if p]
         for kw in parts:
-            if kw.isdigit():
-                limit = max(1, min(int(kw), 50))
-            elif re.match(r"^[A-Za-z]{1,4}[-_ ]?\d", kw):
-                operation = kw.upper().replace(" ", "-")
+            if re.match(r"^[A-Za-z]?[0-9]+[-_ ]?[0-9]*$", kw, re.IGNORECASE):
+                # 关卡号优先：h174, 111, 17-4, H17-4
+                operation = self._resolve_operation(kw)
             elif self.db.query_records(category=kw, limit=1):
                 category = kw
             elif self.db.query_records(operator=kw, limit=1):
                 operator = kw
             else:
-                operation = kw.upper().replace(" ", "-")
+                operation = self._resolve_operation(kw)
 
         records = self.db.query_records(
             operator=operator, operation=operation, category=category, limit=limit)
@@ -233,6 +255,29 @@ class ArkRecPlugin(NcatBotPlugin):
         if len(records) > 10:
             lines.append(f"\n... 共 {len(records)} 条，仅显示前 10 条")
 
+        await event.reply("\n".join(lines))
+
+    @command_registry.command("arkrec_top", description="最近 N 条记录")
+    @param(name="count", default="20", help="数量")
+    async def cmd_top(self, event: GroupMessageEvent, count: str = "20"):
+        try:
+            n = max(1, min(int(count), 50))
+        except ValueError:
+            n = 20
+        records = self.db.query_latest(limit=n)
+        if not records:
+            await event.reply("暂无记录")
+            return
+        lines = [f"最近 {n} 条记录:"]
+        for r in records:
+            team = json.loads(r["team_json"])
+            names = ",".join(t.get("name", "") for t in team[:5])
+            cats = ",".join(json.loads(r["category_json"]))
+            lines.append(
+                f"\n{r['operation']} {r['cn_name']} [{cats}]\n"
+                f"阵容: {names}\n"
+                f"投稿: {r['raider']} | {r.get('url','')}"
+            )
         await event.reply("\n".join(lines))
 
     @command_registry.command("arkrec_op", description="查关卡信息")

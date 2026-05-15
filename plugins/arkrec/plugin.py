@@ -256,14 +256,17 @@ class ArkRecPlugin(NcatBotPlugin):
                     team = json.loads(r["team_json"])
                     names = ",".join(t.get("name", "") for t in team[:5])
                     cats = ",".join(json.loads(r["category_json"]))
-                    mode = "突袭" if r["operationType"] == "challenge" else ""
+                    mode_label = "突袭" if r["operationType"] == "challenge" else ""
                     is_current = category in r.get("_current_cats", set()) if category else bool(r.get("_current_cats"))
-            tag = "" if is_current else " [旧]"
+                    tag = "" if is_current else " [旧]"
                     lines.append(
-                        f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
+                        f"\n{r['operation']} {r['cn_name']} {mode_label} [{cats}]{tag}\n"
                         f"阵容: {names}\n"
                         f"投稿: {r['raider']} | {r.get('url','')}"
                     )
+                await event.reply("\n".join(lines))
+            else:
+                await event.reply("暂无记录")
             return
 
         for kw in parts:

@@ -44,6 +44,7 @@ class ArkRecDB:
                     remark1 TEXT,
                     date_published TEXT,
                     date_created TEXT,
+                    grp TEXT,
                     synced_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_records_operation ON records(operation);
@@ -85,8 +86,8 @@ class ArkRecDB:
                         INSERT OR IGNORE INTO records
                         (_id, story, episode, operation, cn_name, operationType,
                          raider, raiderLink, raiderImage, team_json, modules_json,
-                         category_json, url, remark1, date_published, date_created)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         category_json, url, remark1, date_published, date_created, grp)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (
                         entry["_id"],
                         entry.get("story", ""),
@@ -104,6 +105,7 @@ class ArkRecDB:
                         entry.get("remark1", ""),
                         entry.get("date_published", ""),
                         entry.get("date_created", ""),
+                        entry.get("group", ""),
                     ))
                     if c.rowcount > 0:
                         new += 1
@@ -113,7 +115,7 @@ class ArkRecDB:
         return new
 
     def query_records(self, operation: str = "", category: str = "",
-                      operator: str = "", mode: str = "",
+                      operator: str = "", mode: str = "", grp: str = "",
                       limit: int = 20, offset: int = 0) -> list[dict]:
         """灵活查询记录"""
         sql = "SELECT * FROM records WHERE 1=1"
@@ -130,6 +132,9 @@ class ArkRecDB:
         if mode:
             sql += " AND operationType = ?"
             params.append(mode)
+        if grp:
+            sql += " AND grp = ?"
+            params.append(grp)
         sql += " ORDER BY _id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._connect() as c:

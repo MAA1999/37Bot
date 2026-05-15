@@ -245,6 +245,7 @@ class ArkRecPlugin(NcatBotPlugin):
         operation = ""
         category = ""
         mode = ""  # ""=全部, "normal", "challenge"
+        grp = ""   # ""=全部, "沙盘推演", etc.
 
         parts = [p for p in [p1, p2, p3, p4] if p]
         if not parts:
@@ -271,7 +272,9 @@ class ArkRecPlugin(NcatBotPlugin):
             return
 
         for kw in parts:
-            if kw in ("突袭", "challenge", "磨难", "险地", "磨难险地"):
+            if kw in ("沙盘", "沙盘推演"):
+                grp = "沙盘推演"
+            elif kw in ("突袭", "challenge", "磨难", "险地", "磨难险地"):
                 mode = "challenge"
             elif kw in ("普通", "normal", "标准"):
                 mode = "normal"
@@ -290,7 +293,7 @@ class ArkRecPlugin(NcatBotPlugin):
             category = "常规队"
 
         records = self.db.query_records(
-            operator=operator, operation=operation, category=category, mode=mode, limit=200)
+            operator=operator, operation=operation, category=category, mode=mode, grp=grp, limit=200)
 
         records = self._mark_current(records)
 

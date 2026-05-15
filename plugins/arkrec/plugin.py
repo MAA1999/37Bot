@@ -186,25 +186,23 @@ class ArkRecPlugin(NcatBotPlugin):
     # ====== 新旧分类 ======
 
     @staticmethod
-    def _parse_step(remark: str) -> int:
-        m = re.search(r"(\d+)步", remark)
-        return int(m.group(1)) if m else 99
-
-    @staticmethod
     def _mark_current(records: list[dict]) -> list[dict]:
         """同 (operation, category, mode) 下最少人(解手流最少步)标记为当前，其余为旧。
         每个记录附加 _current_cats 集合，表示该记录在哪些分类下是当前纪录。"""
+        def parse_step(remark: str) -> int:
+            m = re.search(r"(\d+)步", remark)
+            return int(m.group(1)) if m else 99
+
         groups: dict[tuple, list[dict]] = {}
         for r in records:
             cats = json.loads(r.get("category_json", "[]"))
             for cat in cats:
                 key = (r["operation"], cat, r.get("operationType", ""))
                 groups.setdefault(key, []).append(r)
-        best_ids: dict[tuple, str] = {}  # key → best _id
+        best_ids: dict[tuple, str] = {}
         for key, recs in groups.items():
-            is_jsl = "解手流" in key[1]
-            if is_jsl:
-                best = min(recs, key=lambda r: ArkRecPlugin._parse_step(r.get("remark1", "")))
+            if "解手流" in key[1]:
+                best = min(recs, key=lambda r: parse_step(r.get("remark1", "")))
             else:
                 best = min(recs, key=lambda r: len(json.loads(r.get("team_json", "[]"))))
             best_ids[key] = best["_id"]

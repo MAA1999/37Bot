@@ -199,17 +199,18 @@ class ArkRecPlugin(NcatBotPlugin):
             for cat in cats:
                 key = (r["operation"], cat, r.get("operationType", ""))
                 groups.setdefault(key, []).append(r)
-        best_ids: dict[tuple, str] = {}
+        best_ids: dict[tuple, set] = {}  # key → set of best _ids (ties included)
         for key, recs in groups.items():
             if "解手流" in key[1]:
-                best = min(recs, key=lambda r: parse_step(r.get("remark1", "")))
+                min_step = min(parse_step(r.get("remark1", "")) for r in recs)
+                best_ids[key] = {r["_id"] for r in recs if parse_step(r.get("remark1", "")) == min_step}
             else:
-                best = min(recs, key=lambda r: len(json.loads(r.get("team_json", "[]"))))
-            best_ids[key] = best["_id"]
+                min_size = min(len(json.loads(r.get("team_json", "[]"))) for r in recs)
+                best_ids[key] = {r["_id"] for r in recs if len(json.loads(r.get("team_json", "[]"))) == min_size}
         for r in records:
             cats = json.loads(r.get("category_json", "[]"))
             r["_current_cats"] = {cat for cat in cats
-                                   if best_ids.get((r["operation"], cat, r.get("operationType", ""))) == r["_id"]}
+                                   if r["_id"] in best_ids.get((r["operation"], cat, r.get("operationType", "")), set())}
         return records
 
     # ====== 命令 ======

@@ -188,14 +188,18 @@ class ArkRecPlugin(NcatBotPlugin):
         await event.reply("账号已配置，下次同步生效")
 
     @command_registry.command("arkrec", description="查询记录: [数量] [关卡] [分类] [干员]")
-    @param(name="keyword", default="20", help="支持多条件空格分隔，如: H17-4 特种 20")
-    async def cmd_query(self, event: GroupMessageEvent, keyword: str = "20"):
+    @param(name="p1", default="20", help="数量 / 关卡号 / 分类 / 干员名")
+    @param(name="p2", default="", help="可选")
+    @param(name="p3", default="", help="可选")
+    @param(name="p4", default="", help="可选")
+    async def cmd_query(self, event: GroupMessageEvent, p1: str = "20",
+                        p2: str = "", p3: str = "", p4: str = ""):
         limit = 20
         operator = ""
         operation = ""
         category = ""
 
-        parts = keyword.strip().split()
+        parts = [p for p in [p1, p2, p3, p4] if p]
         for kw in parts:
             if kw.isdigit():
                 limit = max(1, min(int(kw), 50))
@@ -213,7 +217,7 @@ class ArkRecPlugin(NcatBotPlugin):
 
         filters = " ".join(f for f in [operation, category, operator] if f)
         if not records:
-            await event.reply(f'未找到 "{keyword}" 相关记录')
+            await event.reply(f"未找到 {' '.join(parts)} 相关记录")
             return
 
         lines = [f'"{filters}" ({len(records)}条):']

@@ -203,19 +203,37 @@ class ArkRecPlugin(NcatBotPlugin):
         self._auth = None
         await event.reply("账号已配置，下次同步生效")
 
-    @command_registry.command("arkrec", description="查询记录: [数量] [关卡] [分类] [干员]")
-    @param(name="p1", default="20", help="数量 / 关卡号 / 分类 / 干员名")
+    @command_registry.command("arkrec", description="查询记录: [关卡] [分类] [干员]")
+    @param(name="p1", default="", help="关卡号 / 分类 / 干员名")
     @param(name="p2", default="", help="可选")
     @param(name="p3", default="", help="可选")
     @param(name="p4", default="", help="可选")
-    async def cmd_query(self, event: GroupMessageEvent, p1: str = "20",
+    async def cmd_query(self, event: GroupMessageEvent, p1: str = "",
                         p2: str = "", p3: str = "", p4: str = ""):
-        limit = 20
         operator = ""
         operation = ""
         category = ""
 
         parts = [p for p in [p1, p2, p3, p4] if p]
+        if not parts:
+            records = self.db.query_latest(limit=20)
+            if records:
+                lines = ["最近 20 条记录:"]
+                for r in records:
+                    team = json.loads(r["team_json"])
+                    names = ",".join(t.get("name", "") for t in team[:5])
+                    cats = ",".join(json.loads(r["category_json"]))
+                    mode = "突袭" if r["operationType"] == "challenge" else ""
+                    lines.append(
+                        f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]\n"
+                        f"阵容: {names}\n"
+                        f"投稿: {r['raider']} | {r.get('url','')}"
+                    )
+                await event.reply("\n".join(lines))
+            else:
+                await event.reply("暂无记录")
+            return
+
         for kw in parts:
             if re.match(r"^[A-Za-z]?[0-9]+[-_ ]?[0-9]*$", kw, re.IGNORECASE):
                 # 关卡号优先：h174, 111, 17-4, H17-4
@@ -228,7 +246,7 @@ class ArkRecPlugin(NcatBotPlugin):
                 operation = self._resolve_operation(kw)
 
         records = self.db.query_records(
-            operator=operator, operation=operation, category=category, limit=limit)
+            operator=operator, operation=operation, category=category, limit=200)
 
         filters = " ".join(f for f in [operation, category, operator] if f)
         if not records:
@@ -236,17 +254,18 @@ class ArkRecPlugin(NcatBotPlugin):
             return
 
         lines = [f'"{filters}" ({len(records)}条):']
-        for r in records[:10]:
+        for r in records[:20]:
             team = json.loads(r["team_json"])
             names = ",".join(t.get("name", "") for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
+            mode = "突袭" if r["operationType"] == "challenge" else ""
             lines.append(
-                f"\n{r['operation']} {r['cn_name']} [{cats}]\n"
+                f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]\n"
                 f"阵容: {names}\n"
                 f"投稿: {r['raider']} | {r.get('url','')}"
             )
-        if len(records) > 10:
-            lines.append(f"\n... 共 {len(records)} 条，仅显示前 10 条")
+        if len(records) > 20:
+            lines.append(f"\n... 共 {len(records)} 条，仅显示前 20 条")
 
         await event.reply("\n".join(lines))
 

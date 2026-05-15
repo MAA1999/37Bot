@@ -1,6 +1,7 @@
 """arkrec 数据库 —— 记录、关卡、专属记录、订阅"""
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path

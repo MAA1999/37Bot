@@ -187,42 +187,36 @@ class ArkRecPlugin(NcatBotPlugin):
         self._auth = None
         await event.reply("账号已配置，下次同步生效")
 
-    @command_registry.command("arkrec", description="查询少人记录 [干员/关卡/分类/数量]")
-    @param(name="keyword", default="20", help="干员名、关卡号、分类名 或 查询数量")
+    @command_registry.command("arkrec", description="查询记录: [数量] [关卡] [分类] [干员]")
+    @param(name="keyword", default="20", help="支持多条件空格分隔，如: H17-4 特种 20")
     async def cmd_query(self, event: GroupMessageEvent, keyword: str = "20"):
-        group_id = str(event.group_id)
         limit = 20
         operator = ""
         operation = ""
         category = ""
 
-        # 判断输入类型
-        kw = keyword.strip()
-        if kw.isdigit():
-            limit = max(1, min(int(kw), 50))
-        elif re.match(r"^[A-Za-z]{1,4}[-_ ]?\d", kw):
-            operation = kw.upper().replace(" ", "-")
-        else:
-            # 先查干员
-            team_test = self.db.query_records(operator=kw, limit=1)
-            if team_test:
+        parts = keyword.strip().split()
+        for kw in parts:
+            if kw.isdigit():
+                limit = max(1, min(int(kw), 50))
+            elif re.match(r"^[A-Za-z]{1,4}[-_ ]?\d", kw):
+                operation = kw.upper().replace(" ", "-")
+            elif self.db.query_records(category=kw, limit=1):
+                category = kw
+            elif self.db.query_records(operator=kw, limit=1):
                 operator = kw
             else:
-                # 再查分类
-                cat_test = self.db.query_records(category=kw, limit=1)
-                if cat_test:
-                    category = kw
-                else:
-                    operation = kw.upper().replace(" ", "-")
+                operation = kw.upper().replace(" ", "-")
 
         records = self.db.query_records(
             operator=operator, operation=operation, category=category, limit=limit)
 
+        filters = " ".join(f for f in [operation, category, operator] if f)
         if not records:
             await event.reply(f'未找到 "{keyword}" 相关记录')
             return
 
-        lines = [f'"{keyword}" 相关记录 ({len(records)}条):']
+        lines = [f'"{filters}" ({len(records)}条):']
         for r in records[:10]:
             team = json.loads(r["team_json"])
             names = ",".join(t.get("name", "") for t in team[:5])

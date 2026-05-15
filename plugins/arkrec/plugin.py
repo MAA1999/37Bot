@@ -319,13 +319,17 @@ class ArkRecPlugin(NcatBotPlugin):
 
     @command_registry.command("arkrec_top", description="最近 N 条记录")
     @param(name="count", default="20", help="数量")
-    async def cmd_top(self, event: GroupMessageEvent, count: str = "20"):
+    @param(name="category", default="", help="筛选分类")
+    async def cmd_top(self, event: GroupMessageEvent, count: str = "20",
+                      category: str = ""):
         try:
             n = max(1, min(int(count), 50))
         except ValueError:
             n = 20
-        records = self.db.query_latest(limit=n)
-        records = self._mark_current(records)
+        if category:
+            records = self.db.query_records(category=category, limit=n)
+        else:
+            records = self.db.query_latest(limit=n)
         if not records:
             await event.reply("暂无记录")
             return
@@ -334,11 +338,8 @@ class ArkRecPlugin(NcatBotPlugin):
             team = json.loads(r["team_json"])
             names = ",".join(t.get("name", "") for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
-            mode = "突袭" if r["operationType"] == "challenge" else ""
-            is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
-            tag = "" if is_current else " [旧]"
             lines.append(
-                f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
+                f"\n{r['operation']} {r['cn_name']} [{cats}]\n"
                 f"阵容: {names}\n"
                 f"投稿: {r['raider']} | {r.get('url','')}"
             )

@@ -239,6 +239,7 @@ class ArkRecPlugin(NcatBotPlugin):
     @param(name="p4", default="", help="可选")
     async def cmd_query(self, event: GroupMessageEvent, p1: str = "",
                         p2: str = "", p3: str = "", p4: str = ""):
+        logger.info(f"arkrec query: p1={p1!r} p2={p2!r} p3={p3!r} p4={p4!r}")
         operator = ""
         operation = ""
         category = ""

@@ -43,6 +43,7 @@ class ArkRecDB:
                     url TEXT,
                     remark1 TEXT,
                     date_published TEXT,
+                    date_created TEXT,
                     synced_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_records_operation ON records(operation);
@@ -84,8 +85,8 @@ class ArkRecDB:
                         INSERT OR IGNORE INTO records
                         (_id, story, episode, operation, cn_name, operationType,
                          raider, raiderLink, raiderImage, team_json, modules_json,
-                         category_json, url, remark1, date_published)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         category_json, url, remark1, date_published, date_created)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (
                         entry["_id"],
                         entry.get("story", ""),
@@ -102,6 +103,7 @@ class ArkRecDB:
                         entry.get("url", ""),
                         entry.get("remark1", ""),
                         entry.get("date_published", ""),
+                        entry.get("date_created", ""),
                     ))
                     if c.rowcount > 0:
                         new += 1
@@ -128,7 +130,7 @@ class ArkRecDB:
         if mode:
             sql += " AND operationType = ?"
             params.append(mode)
-        sql += " ORDER BY date_published DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY date_created DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._connect() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
@@ -136,7 +138,7 @@ class ArkRecDB:
     def query_latest(self, limit: int = 20) -> list[dict]:
         with self._connect() as c:
             return [dict(r) for r in c.execute(
-                "SELECT * FROM records ORDER BY date_published DESC LIMIT ?", (limit,)
+                "SELECT * FROM records ORDER BY date_created DESC LIMIT ?", (limit,)
             ).fetchall()]
 
     def get_record_count(self) -> int:

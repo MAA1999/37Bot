@@ -136,7 +136,7 @@ class ArkRecDB:
     def query_latest(self, limit: int = 20) -> list[dict]:
         with self._connect() as c:
             return [dict(r) for r in c.execute(
-                "SELECT * FROM records ORDER BY synced_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM records ORDER BY date_published DESC LIMIT ?", (limit,)
             ).fetchall()]
 
     def get_record_count(self) -> int:

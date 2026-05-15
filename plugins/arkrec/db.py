@@ -111,7 +111,8 @@ class ArkRecDB:
         return new
 
     def query_records(self, operation: str = "", category: str = "",
-                      operator: str = "", limit: int = 20, offset: int = 0) -> list[dict]:
+                      operator: str = "", mode: str = "",
+                      limit: int = 20, offset: int = 0) -> list[dict]:
         """灵活查询记录"""
         sql = "SELECT * FROM records WHERE 1=1"
         params = []
@@ -124,6 +125,9 @@ class ArkRecDB:
         if operator:
             sql += " AND team_json LIKE ?"
             params.append(f"%{operator}%")
+        if mode:
+            sql += " AND operationType = ?"
+            params.append(mode)
         sql += " ORDER BY date_published DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._connect() as c:

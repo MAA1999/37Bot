@@ -213,6 +213,7 @@ class ArkRecPlugin(NcatBotPlugin):
         operator = ""
         operation = ""
         category = ""
+        mode = ""  # ""=全部, "normal", "challenge"
 
         parts = [p for p in [p1, p2, p3, p4] if p]
         if not parts:
@@ -235,18 +236,22 @@ class ArkRecPlugin(NcatBotPlugin):
             return
 
         for kw in parts:
-            if re.match(r"^[A-Za-z]?[0-9]+[-_ ]?[0-9]*$", kw, re.IGNORECASE):
-                # 关卡号优先：h174, 111, 17-4, H17-4
-                operation = self._resolve_operation(kw)
-            elif self.db.query_records(category=kw, limit=1):
+            if kw in ("突袭", "challenge", "磨难", "险地", "磨难险地"):
+                mode = "challenge"
+            elif kw in ("普通", "normal", "标准"):
+                mode = "normal"
+            elif re.match(r"^[A-Za-z]?[0-9]+[-_ ]?[0-9]*$", kw, re.IGNORECASE):
+                if not operation:
+                    operation = self._resolve_operation(kw)
+            elif not category and self.db.query_records(category=kw, limit=1):
                 category = kw
-            elif self.db.query_records(operator=kw, limit=1):
+            elif not operator and self.db.query_records(operator=kw, limit=1):
                 operator = kw
-            else:
+            elif not operation:
                 operation = self._resolve_operation(kw)
 
         records = self.db.query_records(
-            operator=operator, operation=operation, category=category, limit=200)
+            operator=operator, operation=operation, category=category, mode=mode, limit=200)
 
         filters = " ".join(f for f in [operation, category, operator] if f)
         if not records:

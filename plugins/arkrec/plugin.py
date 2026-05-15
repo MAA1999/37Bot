@@ -177,17 +177,10 @@ class ArkRecPlugin(NcatBotPlugin):
     def _resolve_operation(self, kw: str) -> str:
         """将简写解析为标准关卡号，如 h174 → H17-4"""
         upper = kw.upper().replace(" ", "-")
-        ops = self.db.query_operations(keyword="")
-        # 先精确匹配
-        for op in ops:
-            if op["operation"] == upper:
-                return upper
-        # 归一化匹配，歧义时选短前缀
         norm = self._normalize_op(kw)
-        matches = [op for op in ops if self._normalize_op(op["operation"]) == norm]
+        matches = self.db.resolve_operation(norm)
         if matches:
-            matches.sort(key=lambda o: len(o["operation"].split("-")[0]))
-            return matches[0]["operation"]
+            return matches[0]
         return upper
 
     # ====== 命令 ======

@@ -173,6 +173,17 @@ class ArkRecDB:
         with self._connect() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
 
+    def resolve_operation(self, normalized: str) -> list[str]:
+        """用归一化字符串匹配关卡号，返回所有匹配的标准名列表，按前缀短的优先"""
+        with self._connect() as c:
+            rows = c.execute("SELECT operation FROM operations").fetchall()
+        matches = []
+        for (op,) in rows:
+            if re.sub(r"[^A-Za-z0-9]", "", op).upper() == normalized:
+                matches.append(op)
+        matches.sort(key=lambda o: len(o.split("-")[0]))
+        return matches
+
     # ====== subscriptions ======
 
     def add_subscription(self, group_id: str, filter_type: str, filter_value: str):

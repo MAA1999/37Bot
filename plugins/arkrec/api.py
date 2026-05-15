@@ -7,7 +7,7 @@ from ncatbot.utils import get_log
 
 logger = get_log("ArkRec")
 
-WIKI_BASE = "https://wiki.arkrec.com"
+WIKI_BASE = "https://wiki.arkrec.com/v1"
 MAX_CONCURRENT = 5
 
 

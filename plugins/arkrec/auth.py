@@ -9,7 +9,7 @@ from ncatbot.utils import get_log
 
 logger = get_log("ArkRec")
 
-AUTH_URL = "https://wiki.arkrec.com"
+AUTH_URL = "https://wiki.arkrec.com/v1"
 
 
 class ArkRecAuth:

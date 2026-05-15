@@ -210,6 +210,11 @@ class ArkRecPlugin(NcatBotPlugin):
             cats = json.loads(r.get("category_json", "[]"))
             r["_current_cats"] = {cat for cat in cats
                                    if best_ids.get((r["operation"], cat, r.get("operationType", ""))) == r["_id"]}
+        # debug
+        from ncatbot.utils import get_log
+        log = get_log("ArkRec")
+        for key, bid in sorted(best_ids.items()):
+            log.info(f"best: {key} -> {bid[-8:]}")
         return records
 
     # ====== 命令 ======

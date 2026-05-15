@@ -32,13 +32,13 @@ class ArkRecAuth:
         if resp.status_code != 200:
             raise RuntimeError(f"登录失败 HTTP {resp.status_code}: {resp.text[:200]}")
         cookies = dict(resp.cookies.items())
-        # 补充手动解析 set-cookie（httpx 可能漏掉）
+        # httpx 的 resp.cookies 可能不完整，手动补充真正的 cookie（不含属性）
         for k_bytes, v_bytes in resp.headers.raw:
             if k_bytes.lower() == b"set-cookie":
-                for part in v_bytes.decode("latin-1").split(";"):
-                    if "=" in part:
-                        key, val = part.strip().split("=", 1)
-                        cookies[key] = val
+                first_part = v_bytes.decode("latin-1").split(";")[0].strip()
+                if "=" in first_part:
+                    key, val = first_part.split("=", 1)
+                    cookies[key] = val
         return cookies
 
     async def _validate(self, cookies: dict) -> bool:

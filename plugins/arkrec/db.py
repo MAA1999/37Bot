@@ -61,17 +61,6 @@ class ArkRecDB:
                     zone TEXT
                 );
 
-                -- 专属记录缓存 (来自 /user/operation-info-entry，需登录)
-                CREATE TABLE IF NOT EXISTS exclusive_records (
-                    operation TEXT,
-                    cn_name TEXT,
-                    category TEXT,
-                    mode TEXT,
-                    operators_json TEXT,
-                    updated_at TEXT DEFAULT (datetime('now')),
-                    PRIMARY KEY (operation, category, mode)
-                );
-
                 -- 群订阅
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     group_id TEXT,
@@ -183,51 +172,6 @@ class ArkRecDB:
         params.append(limit)
         with self._connect() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
-
-    # ====== exclusive_records ======
-
-    def upsert_exclusive(self, operation: str, cn_name: str, category: str,
-                         mode: str, operators: list[str]):
-        with self._connect() as c:
-            c.execute("""
-                INSERT OR REPLACE INTO exclusive_records
-                (operation, cn_name, category, mode, operators_json, updated_at)
-                VALUES (?,?,?,?,?,?)
-            """, (operation, cn_name, category, mode,
-                  json.dumps(operators, ensure_ascii=False),
-                  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            c.commit()
-
-    def query_exclusive(self, operation: str = "", category: str = "",
-                        mode: str = "") -> list[dict]:
-        sql = "SELECT * FROM exclusive_records WHERE 1=1"
-        params = []
-        if operation:
-            sql += " AND operation = ?"
-            params.append(operation)
-        if category:
-            sql += " AND category = ?"
-            params.append(category)
-        if mode:
-            sql += " AND mode = ?"
-            params.append(mode)
-        sql += " ORDER BY updated_at DESC"
-        with self._connect() as c:
-            return [dict(r) for r in c.execute(sql, params).fetchall()]
-
-    def is_exclusive_stale(self) -> bool:
-        """专属记录是否过期（超过 1 天未更新）"""
-        with self._connect() as c:
-            r = c.execute(
-                "SELECT MAX(updated_at) FROM exclusive_records"
-            ).fetchone()
-            if not r or not r[0]:
-                return True
-            try:
-                last = datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S")
-                return (datetime.now() - last).total_seconds() > 86400
-            except Exception:
-                return True
 
     # ====== subscriptions ======
 

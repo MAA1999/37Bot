@@ -9,7 +9,7 @@ from pathlib import Path
 
 from plugins.arkrec.auth import ArkRecAuth
 from plugins.arkrec.db import ArkRecDB
-from plugins.arkrec.api import full_sync, sync_exclusive
+from plugins.arkrec.api import full_sync
 
 
 async def main():
@@ -44,15 +44,6 @@ async def main():
     print("开始全量同步...")
     total = await full_sync(db, client, sem)
     print(f"全量同步完成: {total} 条记录")
-
-    print("同步专属记录...")
-    try:
-        ex_total = await sync_exclusive(db, client)
-        print(f"专属记录: {ex_total} 条")
-    except Exception as e:
-        import traceback
-        print(f"专属记录同步失败: {type(e).__name__}: {e}")
-        traceback.print_exc()
 
     count = db.get_record_count()
     print(f"数据库总记录: {count} 条")

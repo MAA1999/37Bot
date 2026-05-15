@@ -12,12 +12,11 @@ from ncatbot.utils import get_log
 from .auth import ArkRecAuth
 from .db import ArkRecDB
 from .config import GroupSubscription
-from .api import full_sync, incremental_sync, sync_exclusive
+from .api import full_sync, incremental_sync
 
 logger = get_log("ArkRec")
 
 SYNC_INTERVAL = 120  # 增量同步间隔（秒）
-EXCLUSIVE_INTERVAL = 86400  # 专属记录刷新间隔（秒）
 
 
 class ArkRecPlugin(NcatBotPlugin):
@@ -33,7 +32,6 @@ class ArkRecPlugin(NcatBotPlugin):
         self.db = ArkRecDB(self.data_dir / "arkrec.db")
         self._auth: ArkRecAuth | None = None
         self._synced = False
-        self._last_exclusive_sync = 0.0
 
         # 加载配置
         self.cfg = self._load_config()
@@ -116,14 +114,6 @@ class ArkRecPlugin(NcatBotPlugin):
                         self._synced = True
 
                     await incremental_sync(self.db, client)
-
-                    # 检查专属记录是否需要刷新
-                    if self.db.is_exclusive_stale():
-                        try:
-                            await sync_exclusive(self.db, client)
-                        except Exception as e:
-                            logger.warning(f"专属记录刷新失败: {e}")
-
                     await self._push_new_records(client)
                 else:
                     logger.debug("未配置账号，跳过同步")
@@ -333,26 +323,5 @@ class ArkRecPlugin(NcatBotPlugin):
             if not any([sub.categories, sub.operators, sub.operations]):
                 lines.append("  (未设置筛选条件)")
         await event.reply("\n".join(lines))
-
-    @command_registry.command("arkrec_exclusive", description="查某关专属记录")
-    @param(name="operation", default="", help="关卡号 如 1-7")
-    @param(name="category", default="", help="流派筛选（可选）")
-    async def cmd_exclusive(self, event: GroupMessageEvent,
-                            operation: str = "", category: str = ""):
-        if not operation:
-            await event.reply("用法: /arkrec_exclusive <关卡号> [流派]")
-            return
-        records = self.db.query_exclusive(
-            operation=operation.upper().replace(" ", "-"), category=category)
-        if not records:
-            await event.reply(f'未找到 "{operation}" 专属记录，请检查关卡号或稍后刷新')
-            return
-        lines = [f"{operation} 专属记录:"]
-        for r in records[:15]:
-            ops = json.loads(r["operators_json"])
-            lines.append(
-                f"[{r['category']}] {r['mode']}: {', '.join(ops)}")
-        await event.reply("\n".join(lines))
-
 
 __all__ = ["ArkRecPlugin"]

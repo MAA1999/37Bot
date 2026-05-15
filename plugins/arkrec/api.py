@@ -60,14 +60,6 @@ async def fetch_latest_records(
     return data
 
 
-async def fetch_exclusive_records(client: httpx.AsyncClient) -> list[dict]:
-    """获取全量专属记录（需登录）"""
-    resp = await client.get(f"{WIKI_BASE}/user/operation-info-entry")
-    if resp.status_code != 200:
-        raise RuntimeError(f"exclusive-records HTTP {resp.status_code}")
-    return resp.json()
-
-
 async def fetch_operators(client: httpx.AsyncClient) -> list[dict]:
     """获取全干员列表"""
     resp = await client.get(f"{WIKI_BASE}/api/operators")
@@ -131,25 +123,3 @@ async def incremental_sync(db, client: httpx.AsyncClient):
     return total
 
 
-async def sync_exclusive(db, client: httpx.AsyncClient):
-    """同步专属记录缓存"""
-    data = await fetch_exclusive_records(client)
-    total = 0
-    for item in data:
-        op = item.get("operation", "")
-        cn = item.get("cn_name", "")
-        for category, modes in item.items():
-            if category in ("operation", "cn_name", "story", "episode", "hasChallenge"):
-                continue
-            if not isinstance(modes, dict):
-                continue
-            for mode in ("normal", "challenge"):
-                mode_data = modes.get(mode)
-                if not mode_data:
-                    continue
-                operators = mode_data.get("exclusive", [])
-                if operators:
-                    db.upsert_exclusive(op, cn, category, mode, operators)
-                    total += 1
-    logger.info(f"专属记录同步完成: {total} 条")
-    return total

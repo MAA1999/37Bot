@@ -5,7 +5,11 @@ from .llm import LLMClient, start_health_probe, get_health_status
 def get_llm() -> LLMClient:
     """返回基于当前共享配置的 LLMClient，每次读取最新配置"""
     cfg = load_llm_config()
-    return LLMClient(base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model, backups=cfg.backups)
+    client = LLMClient(base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model, backups=cfg.backups)
+    if cfg.backups:
+        from ncatbot.utils import get_log
+        get_log("AiMod").debug(f"LLM 配置: 主={cfg.model}, 备用={len(cfg.backups)}个")
+    return client
 
 
 def is_llm_configured() -> bool:

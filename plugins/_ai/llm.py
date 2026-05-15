@@ -131,7 +131,7 @@ class LLMClient:
 
         async with _semaphore:
             cfgs = list(self._model_cfgs())
-            logger.debug(f"可用模型: {[l for l,_,_,_ in cfgs]}")
+            logger.info(f"可用模型 ({len(cfgs)}): {[l for l,_,_,_ in cfgs]}")
             for label, base_url, api_key, model in cfgs:
                 result, is_transient = await self._chat_impl(
                     base_url, api_key, model, messages, temperature, max_tokens, stream, timeout)

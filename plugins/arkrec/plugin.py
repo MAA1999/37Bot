@@ -248,10 +248,11 @@ class ArkRecPlugin(NcatBotPlugin):
 
         parts = [p for p in [p1, p2, p3, p4] if p]
         if not parts:
-            records = self.db.query_latest(limit=200)
+            category = "常规队"
+            records = self.db.query_records(category=category, limit=200)
             records = self._mark_current(records)
             if records:
-                lines = ["最近 20 条记录:"]
+                lines = [f"最近常规队记录:"]
                 for r in records[:20]:
                     team = json.loads(r["team_json"])
                     names = ",".join(t.get("name", "") for t in team[:5])
@@ -280,6 +281,10 @@ class ArkRecPlugin(NcatBotPlugin):
                 operator = kw
             elif not operation:
                 operation = self._resolve_operation(kw)
+
+        # 无分类筛选时默认常规队
+        if not category and not operator:
+            category = "常规队"
 
         records = self.db.query_records(
             operator=operator, operation=operation, category=category, mode=mode, limit=200)

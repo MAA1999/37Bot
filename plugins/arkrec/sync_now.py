@@ -50,7 +50,9 @@ async def main():
         ex_total = await sync_exclusive(db, client)
         print(f"专属记录: {ex_total} 条")
     except Exception as e:
-        print(f"专属记录同步失败: {e}")
+        import traceback
+        print(f"专属记录同步失败: {type(e).__name__}: {e}")
+        traceback.print_exc()
 
     count = db.get_record_count()
     print(f"数据库总记录: {count} 条")

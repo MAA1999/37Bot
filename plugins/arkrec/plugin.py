@@ -210,11 +210,6 @@ class ArkRecPlugin(NcatBotPlugin):
             cats = json.loads(r.get("category_json", "[]"))
             r["_current_cats"] = {cat for cat in cats
                                    if best_ids.get((r["operation"], cat, r.get("operationType", ""))) == r["_id"]}
-        # debug
-        from ncatbot.utils import get_log
-        log = get_log("ArkRec")
-        for key, bid in sorted(best_ids.items()):
-            log.info(f"best: {key} -> {bid[-8:]}")
         return records
 
     # ====== 命令 ======
@@ -262,7 +257,7 @@ class ArkRecPlugin(NcatBotPlugin):
                     names = ",".join(t.get("name", "") for t in team[:5])
                     cats = ",".join(json.loads(r["category_json"]))
                     mode_label = "突袭" if r["operationType"] == "challenge" else ""
-                    is_current = category in r.get("_current_cats", set()) if category else bool(r.get("_current_cats"))
+                    is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
                     tag = "" if is_current else " [旧]"
                     lines.append(
                         f"\n{r['operation']} {r['cn_name']} {mode_label} [{cats}]{tag}\n"
@@ -309,7 +304,7 @@ class ArkRecPlugin(NcatBotPlugin):
             names = ",".join(t.get("name", "") for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
             mode = "突袭" if r["operationType"] == "challenge" else ""
-            is_current = category in r.get("_current_cats", set()) if category else bool(r.get("_current_cats"))
+            is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
             tag = "" if is_current else " [旧]"
             lines.append(
                 f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
@@ -339,7 +334,7 @@ class ArkRecPlugin(NcatBotPlugin):
             names = ",".join(t.get("name", "") for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
             mode = "突袭" if r["operationType"] == "challenge" else ""
-            is_current = category in r.get("_current_cats", set()) if category else bool(r.get("_current_cats"))
+            is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
             tag = "" if is_current else " [旧]"
             lines.append(
                 f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"

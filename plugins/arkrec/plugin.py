@@ -41,8 +41,10 @@ class ArkRecPlugin(NcatBotPlugin):
     dependencies = {}
 
     async def on_load(self):
+        logger.info("ArkRec on_load start")
         self.data_dir = self.workspace
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"ArkRec workspace: {self.data_dir}")
 
         self.db = ArkRecDB(self.data_dir / "arkrec.db")
         self._auth: ArkRecAuth | None = None
@@ -58,8 +60,10 @@ class ArkRecPlugin(NcatBotPlugin):
 
         # 启动后台任务（保存引用以便卸载时 cancel）
         self._sync_task = asyncio.create_task(self._sync_loop())
+        logger.info("ArkRec sync task created")
 
     async def on_unload(self):
+        logger.info("ArkRec on_unload start")
         self._sync_task.cancel()
         if self._tourist_client:
             await self._tourist_client.aclose()
@@ -153,13 +157,16 @@ class ArkRecPlugin(NcatBotPlugin):
     # ====== 后台任务 ======
 
     async def _sync_loop(self):
+        logger.info("ArkRec sync loop start")
         await asyncio.sleep(10)
         while True:
             try:
+                logger.info("ArkRec sync tick")
                 client = self._get_tourist_client()
 
                 if not self._synced:
                     count = self.db.get_record_count()
+                    logger.info(f"ArkRec record count before initial sync: {count}")
                     if count == 0:
                         logger.info("数据库为空，开始全量同步...")
                         sem = asyncio.Semaphore(5)
@@ -167,7 +174,9 @@ class ArkRecPlugin(NcatBotPlugin):
                     self._synced = True
 
                 new_ids = await incremental_sync(self.db, client)
+                logger.info(f"ArkRec incremental done: {len(new_ids)} new ids")
                 await self._push_new_records(new_ids)
+                logger.info("ArkRec push state saved")
             except Exception as e:
                 logger.error(f"同步异常: {e}")
 
@@ -177,6 +186,11 @@ class ArkRecPlugin(NcatBotPlugin):
         """推送匹配订阅的记录，每群每轮最多 3 条。
         未发送的暂存到 per-group pending 队列，下轮优先补推 pending 再推新记录。
         """
+        pending_total = sum(len(ids) for ids in self._pending_ids.values())
+        logger.info(
+            f"ArkRec push check: new_ids={len(new_ids)}, "
+            f"groups={len(self.subs)}, pending={pending_total}"
+        )
         new_records = self.db.get_records_by_ids(new_ids) if new_ids else []
 
         for group_id, sub in self.subs.items():

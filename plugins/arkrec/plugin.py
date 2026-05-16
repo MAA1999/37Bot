@@ -284,6 +284,8 @@ class ArkRecPlugin(NcatBotPlugin):
     def _extract_message_id(resp) -> str:
         if resp is None:
             return ""
+        if isinstance(resp, (str, int)):
+            return str(resp)
         if isinstance(resp, dict):
             for key in ("message_id", "id"):
                 if resp.get(key) is not None:

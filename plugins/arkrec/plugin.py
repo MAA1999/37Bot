@@ -1,6 +1,7 @@
 """arkrec 插件 —— 明日方舟少人wiki"""
 
 import asyncio
+import html
 import json
 import re
 import threading
@@ -8,6 +9,7 @@ import time
 from pathlib import Path
 
 import httpx
+from playwright.async_api import async_playwright
 from ncatbot.plugin_system import NcatBotPlugin, command_registry, on_message, param
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.core.event.message_segment import Reply
@@ -23,6 +25,7 @@ logger = get_log("ArkRec")
 SYNC_INTERVAL = 120  # 增量同步间隔（秒）
 LINK_CACHE_TTL = 3600
 LINK_CACHE_LIMIT = 200
+RECORD_IMAGE_MIN_ROWS = 2
 
 CATEGORY_ALIASES = {
     "wzw": "毋作吾",
@@ -66,6 +69,8 @@ class ArkRecPlugin(NcatBotPlugin):
         logger.info("ArkRec on_load start")
         self.data_dir = self.workspace
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.image_dir = self.data_dir / "images"
+        self.image_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"ArkRec workspace: {self.data_dir}")
 
         self.db = ArkRecDB(self.data_dir / "arkrec.db")
@@ -299,6 +304,192 @@ class ArkRecPlugin(NcatBotPlugin):
         )
 
     @staticmethod
+    def _record_image_html(
+        title: str,
+        records: list[dict],
+        old_count: int = 0,
+        truncated_count: int = 0,
+        show_old_tag: bool = False,
+    ) -> str:
+        def esc(value) -> str:
+            return html.escape(str(value or ""), quote=True)
+
+        rows = []
+        for i, r in enumerate(records, 1):
+            team = json.loads(r.get("team_json", "[]"))
+            categories = json.loads(r.get("category_json", "[]"))
+            names = "、".join(
+                _team_member_name(t) for t in team[:5] if _team_member_name(t)
+            )
+            difficulty = ArkRecPlugin._record_difficulty_label(r)
+            badges = []
+            if difficulty:
+                badges.append(f'<span class="badge badge-mode">{esc(difficulty)}</span>')
+            if show_old_tag:
+                badges.append('<span class="badge badge-old">旧</span>')
+            cat_html = "".join(
+                f'<span class="chip">{esc(cat)}</span>' for cat in categories[:8]
+            )
+            rows.append(f"""
+<section class="record">
+  <div class="idx">{i}</div>
+  <div class="main">
+    <div class="head">
+      <span class="op">{esc(r.get("operation", ""))}</span>
+      <span class="name">{esc(r.get("cn_name", ""))}</span>
+      {''.join(badges)}
+    </div>
+    <div class="cats">{cat_html}</div>
+    <div class="meta"><span>阵容</span>{esc(names or "-")}</div>
+    <div class="meta"><span>投稿</span>{esc(r.get("raider", "") or "-")}</div>
+  </div>
+</section>""")
+
+        notes = []
+        if truncated_count > 0:
+            notes.append(f"当前纪录共 {truncated_count} 条，仅显示前 {len(records)} 条")
+        if old_count > 0:
+            notes.append(f"旧纪录 {old_count} 条，回复本消息“旧”可查看")
+        notes.append("回复本消息序号可查看链接")
+        note_html = "".join(f"<div>{esc(note)}</div>" for note in notes)
+
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  padding: 24px;
+  background: #eef1f5;
+  color: #172033;
+  font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+}}
+.card {{
+  width: 760px;
+  margin: 0 auto;
+  background: #ffffff;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  overflow: hidden;
+}}
+.title {{
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid #e5eaf1;
+  background: #f8fafc;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0;
+}}
+.records {{ padding: 12px 14px 6px; }}
+.record {{
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 12px;
+  padding: 12px 8px;
+  border-bottom: 1px solid #edf0f5;
+}}
+.record:last-child {{ border-bottom: 0; }}
+.idx {{
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 28px;
+  text-align: center;
+}}
+.head {{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 30px;
+}}
+.op {{ font-size: 18px; font-weight: 700; color: #0f172a; }}
+.name {{ font-size: 18px; font-weight: 650; color: #1f2937; }}
+.badge, .chip {{
+  display: inline-block;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+}}
+.badge-mode {{ background: #fff1d6; color: #8a4b00; border: 1px solid #ffd58a; }}
+.badge-old {{ background: #f1f5f9; color: #64748b; border: 1px solid #d8e0ea; }}
+.cats {{ margin-top: 6px; display: flex; gap: 5px; flex-wrap: wrap; }}
+.chip {{ background: #eef6ff; color: #175da8; border: 1px solid #cfe4fb; }}
+.meta {{
+  margin-top: 7px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: #334155;
+  word-break: break-word;
+}}
+.meta span {{
+  display: inline-block;
+  min-width: 40px;
+  margin-right: 8px;
+  color: #64748b;
+}}
+.footer {{
+  border-top: 1px solid #e5eaf1;
+  background: #fbfcfe;
+  padding: 12px 22px 16px;
+  font-size: 14px;
+  color: #64748b;
+  line-height: 1.7;
+}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title">{esc(title)}</div>
+  <div class="records">{''.join(rows)}</div>
+  <div class="footer">{note_html}</div>
+</div>
+</body>
+</html>"""
+
+    async def _render_records_image(
+        self,
+        title: str,
+        records: list[dict],
+        old_count: int = 0,
+        truncated_count: int = 0,
+        show_old_tag: bool = False,
+    ) -> Path | None:
+        if len(records) < RECORD_IMAGE_MIN_ROWS:
+            return None
+        html_doc = self._record_image_html(
+            title, records, old_count, truncated_count, show_old_tag
+        )
+        png_path = self.image_dir / f"arkrec_{int(time.time() * 1000)}.png"
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page(viewport={"width": 808, "height": 800})
+                await page.set_content(html_doc, wait_until="networkidle")
+                card = await page.query_selector(".card")
+                if card:
+                    box = await card.bounding_box()
+                    if box:
+                        await page.set_viewport_size({
+                            "width": 808,
+                            "height": min(max(int(box["height"]) + 48, 360), 3000),
+                        })
+                await page.screenshot(path=str(png_path), full_page=True)
+                await browser.close()
+            return png_path
+        except Exception as e:
+            logger.error(f"ArkRec render records image failed: {e}")
+            return None
+
+    @staticmethod
     def _extract_message_id(resp) -> str:
         if resp is None:
             return ""
@@ -341,8 +532,33 @@ class ArkRecPlugin(NcatBotPlugin):
         text: str,
         records: list[dict],
         old_records: list[dict] | None = None,
+        show_old_tag: bool = False,
     ):
-        resp = await event.reply(text)
+        title = text.splitlines()[0] if text else "ArkRec 记录"
+        truncated_count = 0
+        match = re.search(r"当前纪录共\s*(\d+)\s*条", text)
+        if match:
+            truncated_count = int(match.group(1))
+        image_path = await self._render_records_image(
+            title,
+            records,
+            old_count=len(old_records or []),
+            truncated_count=truncated_count,
+            show_old_tag=show_old_tag,
+        )
+        if image_path:
+            try:
+                resp = await event.reply(f"[CQ:image,file={image_path.resolve().as_posix()}]")
+            except Exception as e:
+                logger.error(f"ArkRec send records image failed: {e}")
+                resp = await event.reply(text)
+            finally:
+                try:
+                    image_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        else:
+            resp = await event.reply(text)
         message_id = self._extract_message_id(resp)
         if not message_id:
             logger.warning(f"ArkRec query reply message_id missing: {resp!r}")
@@ -405,7 +621,9 @@ class ArkRecPlugin(NcatBotPlugin):
             if len(old_records) > 20:
                 lines.append(f"\n... 共 {len(old_records)} 条，仅显示前 20 条")
             lines.append("\n回复本条消息序号可查看链接")
-            await self._reply_records(event, "\n".join(lines), display_records)
+            await self._reply_records(
+                event, "\n".join(lines), display_records, show_old_tag=True
+            )
             return
 
         match = re.search(r"\d+", text)

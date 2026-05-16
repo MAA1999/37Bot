@@ -289,8 +289,9 @@ class ArkRecPlugin(NcatBotPlugin):
         team = json.loads(r.get("team_json", "[]"))
         cats = json.loads(r.get("category_json", "[]"))
         names = ",".join(_team_member_name(t) for t in team)
+        difficulty = self._record_difficulty_label(r) or "普通"
         return (
-            f"新纪录: {r['operation']} {r['cn_name']} ({r['operationType']})\n"
+            f"新纪录: {r['operation']} {r['cn_name']} ({difficulty})\n"
             f"阵容: {names}\n"
             f"分类: {','.join(cats)}\n"
             f"投稿: {r.get('raider', '')}\n"
@@ -458,7 +459,7 @@ class ArkRecPlugin(NcatBotPlugin):
         team = json.loads(r["team_json"])
         names = ",".join(_team_member_name(t) for t in team[:5])
         cats = ",".join(json.loads(r["category_json"]))
-        mode = "突袭" if r["operationType"] == "challenge" else ""
+        mode = self._record_difficulty_label(r)
         tag = ""
         if show_old_tag:
             tag = " [旧]"
@@ -500,8 +501,23 @@ class ArkRecPlugin(NcatBotPlugin):
     # ====== 新旧分类 ======
 
     @staticmethod
+    def _record_difficulty_key(record: dict) -> str:
+        if record.get("grp") == "沙盘推演":
+            return "sandbox"
+        return record.get("operationType", "")
+
+    @classmethod
+    def _record_difficulty_label(cls, record: dict) -> str:
+        difficulty = cls._record_difficulty_key(record)
+        if difficulty == "sandbox":
+            return "沙盘"
+        if difficulty == "challenge":
+            return "突袭"
+        return ""
+
+    @staticmethod
     def _mark_current(records: list[dict]) -> list[dict]:
-        """同 (operation, category, mode) 下最少人(解手流最少步)标记为当前，其余为旧。
+        """同 (operation, category, difficulty) 下最少人(解手流最少步)标记为当前，其余为旧。
         每个记录附加 _current_cats 集合，表示该记录在哪些分类下是当前纪录。"""
         def parse_step(remark: str) -> int:
             m = re.search(r"(\d+)步", remark)
@@ -510,8 +526,9 @@ class ArkRecPlugin(NcatBotPlugin):
         groups: dict[tuple, list[dict]] = {}
         for r in records:
             cats = json.loads(r.get("category_json", "[]"))
+            difficulty = ArkRecPlugin._record_difficulty_key(r)
             for cat in cats:
-                key = (r["operation"], cat, r.get("operationType", ""))
+                key = (r["operation"], cat, difficulty)
                 groups.setdefault(key, []).append(r)
         best_ids: dict[tuple, set] = {}  # key → set of best _ids (ties included)
         for key, recs in groups.items():
@@ -523,8 +540,9 @@ class ArkRecPlugin(NcatBotPlugin):
                 best_ids[key] = {r["_id"] for r in recs if len(json.loads(r.get("team_json", "[]"))) == min_size}
         for r in records:
             cats = json.loads(r.get("category_json", "[]"))
+            difficulty = ArkRecPlugin._record_difficulty_key(r)
             r["_current_cats"] = {cat for cat in cats
-                                   if r["_id"] in best_ids.get((r["operation"], cat, r.get("operationType", "")), set())}
+                                   if r["_id"] in best_ids.get((r["operation"], cat, difficulty), set())}
         return records
 
     # ====== 命令 ======
@@ -614,6 +632,8 @@ class ArkRecPlugin(NcatBotPlugin):
 
         records = self.db.query_records(
             operator=operator, operation=operation, category=category, mode=mode, grp=grp, limit=200)
+        if mode == "challenge" and not grp:
+            records = [r for r in records if r.get("grp") != "沙盘推演"]
 
         # 基于全关卡数据判当前纪录，避免在筛选子集里误判
         if operation:

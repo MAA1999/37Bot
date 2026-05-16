@@ -9,6 +9,15 @@ logger = get_log("ArkRec")
 
 WIKI_BASE = "https://wiki.arkrec.com/v1"
 MAX_CONCURRENT = 5
+RECORD_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/147.0.0.0 Safari/537.36"
+    ),
+}
 
 
 async def fetch_menu(client: httpx.AsyncClient) -> list[dict]:
@@ -36,6 +45,7 @@ async def fetch_records_for_operation(
     """获取单个关卡的记录"""
     resp = await client.post(
         f"{WIKI_BASE}/api/records",
+        headers=RECORD_HEADERS,
         json={"operation": operation, "cn_name": cn_name},
     )
     if resp.status_code != 200:
@@ -121,5 +131,3 @@ async def incremental_sync(db, client: httpx.AsyncClient):
     if total:
         logger.info(f"增量同步: +{total} 条")
     return total
-
-

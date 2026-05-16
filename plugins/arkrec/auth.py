@@ -69,7 +69,7 @@ class ArkRecAuth:
 
         self._client = httpx.AsyncClient(
             cookies=cookies,
-            headers={"User-Agent": "37Bot-ArkRec/1.0"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"},
             timeout=30,
         )
         return self._client
@@ -81,7 +81,7 @@ class ArkRecAuth:
 
     def _raw_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            headers={"User-Agent": "37Bot-ArkRec/1.0"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"},
             timeout=30,
         )
 

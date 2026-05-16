@@ -140,7 +140,10 @@ class ArkRecPlugin(NcatBotPlugin):
             return self._auth
         return None
 
-    async def _is_admin(self, group_id: str, user_id: str) -> bool:
+    async def _check_admin_or_root(self, group_id: str, user_id: str) -> bool:
+        """root 直接放行；否则需是群主/管理员"""
+        if self.rbac_manager.user_has_role(str(user_id), "root"):
+            return True
         try:
             info = await self.api.get_group_member_info(group_id, user_id)
             return info.role in ("owner", "admin")
@@ -470,8 +473,8 @@ class ArkRecPlugin(NcatBotPlugin):
     @command_registry.command("arkrec_sub", description="[管理员] 订阅推送: <分类/干员/关卡>")
     @param(name="value", default="", help="分类名、干员名 或 关卡号")
     async def cmd_sub(self, event: GroupMessageEvent, value: str = ""):
-        if not await self._is_admin(event.group_id, event.user_id):
-            await event.reply("需要群主或管理员权限")
+        if not await self._check_admin_or_root(event.group_id, event.user_id):
+            await event.reply("需要群主/管理员或 root 权限")
             return
         if not value:
             await event.reply("用法: /arkrec_sub <分类名/干员名/关卡号>")
@@ -500,8 +503,8 @@ class ArkRecPlugin(NcatBotPlugin):
     @command_registry.command("arkrec_unsub", description="[管理员] 取消订阅")
     @param(name="value", default="", help="要取消的分类/干员/关卡，留空取消全部")
     async def cmd_unsub(self, event: GroupMessageEvent, value: str = ""):
-        if not await self._is_admin(event.group_id, event.user_id):
-            await event.reply("需要群主或管理员权限")
+        if not await self._check_admin_or_root(event.group_id, event.user_id):
+            await event.reply("需要群主/管理员或 root 权限")
             return
         group_id = str(event.group_id)
         if not value:

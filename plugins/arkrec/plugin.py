@@ -4,11 +4,13 @@ import asyncio
 import json
 import re
 import threading
+import time
 from pathlib import Path
 
 import httpx
-from ncatbot.plugin_system import NcatBotPlugin, command_registry, param
+from ncatbot.plugin_system import NcatBotPlugin, command_registry, on_message, param
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
+from ncatbot.core.event.message_segment import Reply
 from ncatbot.utils import get_log
 
 from .auth import ArkRecAuth
@@ -19,6 +21,8 @@ from .api import full_sync, incremental_sync
 logger = get_log("ArkRec")
 
 SYNC_INTERVAL = 120  # 增量同步间隔（秒）
+LINK_CACHE_TTL = 3600
+LINK_CACHE_LIMIT = 200
 
 CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -58,6 +62,7 @@ class ArkRecPlugin(NcatBotPlugin):
         self._pushed_state: dict[str, str]
         self._pending_ids: dict[str, list[str]]
         self._pushed_state, self._pending_ids = self._load_push_state()
+        self._link_cache: dict[str, dict] = {}
 
         self.add_scheduled_task(
             self._sync_once,
@@ -275,6 +280,113 @@ class ArkRecPlugin(NcatBotPlugin):
             f"链接: {r.get('url', '')}"
         )
 
+    @staticmethod
+    def _extract_message_id(resp) -> str:
+        if resp is None:
+            return ""
+        if isinstance(resp, dict):
+            for key in ("message_id", "id"):
+                if resp.get(key) is not None:
+                    return str(resp[key])
+            data = resp.get("data")
+            if isinstance(data, dict):
+                for key in ("message_id", "id"):
+                    if data.get(key) is not None:
+                        return str(data[key])
+        for key in ("message_id", "id"):
+            value = getattr(resp, key, None)
+            if value is not None:
+                return str(value)
+        return ""
+
+    def _prune_link_cache(self):
+        now = time.time()
+        expired = [
+            mid for mid, item in self._link_cache.items()
+            if now - item.get("created_at", now) > LINK_CACHE_TTL
+        ]
+        for mid in expired:
+            self._link_cache.pop(mid, None)
+        if len(self._link_cache) > LINK_CACHE_LIMIT:
+            ordered = sorted(
+                self._link_cache.items(),
+                key=lambda item: item[1].get("created_at", 0),
+            )
+            for mid, _ in ordered[: len(self._link_cache) - LINK_CACHE_LIMIT]:
+                self._link_cache.pop(mid, None)
+
+    async def _reply_records(self, event: GroupMessageEvent, text: str, records: list[dict]):
+        resp = await event.reply(text)
+        message_id = self._extract_message_id(resp)
+        if not message_id:
+            logger.warning(f"ArkRec query reply message_id missing: {resp!r}")
+            return
+        links = []
+        has_url = False
+        for i, r in enumerate(records, 1):
+            url = r.get("url", "")
+            if url:
+                has_url = True
+            links.append({
+                "index": i,
+                "_id": r.get("_id", ""),
+                "operation": r.get("operation", ""),
+                "cn_name": r.get("cn_name", ""),
+                "raider": r.get("raider", ""),
+                "url": url,
+            })
+        if has_url:
+            self._link_cache[message_id] = {
+                "group_id": str(event.group_id),
+                "created_at": time.time(),
+                "links": links,
+            }
+            self._prune_link_cache()
+
+    def _get_replied_message_id(self, event: GroupMessageEvent) -> str:
+        for seg in event.message.filter(Reply):
+            if getattr(seg, "id", None):
+                return str(seg.id)
+        return ""
+
+    @on_message
+    async def _on_link_reply(self, event):
+        if not isinstance(event, GroupMessageEvent):
+            return
+        replied_id = self._get_replied_message_id(event)
+        if not replied_id:
+            return
+        cache = self._link_cache.get(replied_id)
+        if not cache or cache.get("group_id") != str(event.group_id):
+            return
+        self._prune_link_cache()
+        if replied_id not in self._link_cache:
+            return
+
+        text = event.message.concatenate_text().strip()
+        match = re.search(r"\d+", text)
+        if match:
+            index = int(match.group(0))
+        elif len(cache["links"]) == 1:
+            index = 1
+        else:
+            await event.reply("请回复记录序号，如 1")
+            return
+
+        links = cache["links"]
+        if index < 1 or index > len(links):
+            await event.reply(f"序号范围: 1-{len(links)}")
+            return
+        item = links[index - 1]
+        if not item["url"]:
+            await event.reply(f"[{index}] 这条记录没有链接")
+            return
+        await event.reply(
+            f"[{index}] {item['operation']} {item['cn_name']}\n"
+            f"投稿: {item['raider']}\n"
+            f"{item['url']}"
+        )
+
     # ====== 关卡名称解析 ======
 
     @staticmethod
@@ -364,19 +476,21 @@ class ArkRecPlugin(NcatBotPlugin):
             records = self._mark_current(records)
             if records:
                 lines = [f"最近常规队记录:"]
-                for r in records[:20]:
-                    team = json.loads(r["team_json"])
-                    names = ",".join(_team_member_name(t) for t in team[:5])
+                display_records = records[:20]
+                for i, r in enumerate(display_records, 1):
                     cats = ",".join(json.loads(r["category_json"]))
                     mode_label = "突袭" if r["operationType"] == "challenge" else ""
                     is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
                     tag = "" if is_current else " [旧]"
+                    team = json.loads(r["team_json"])
+                    names = ",".join(_team_member_name(t) for t in team[:5])
                     lines.append(
-                        f"\n{r['operation']} {r['cn_name']} {mode_label} [{cats}]{tag}\n"
+                        f"\n[{i}] {r['operation']} {r['cn_name']} {mode_label} [{cats}]{tag}\n"
                         f"阵容: {names}\n"
-                        f"投稿: {r['raider']} | {r.get('url','')}"
+                        f"投稿: {r['raider']}"
                     )
-                await event.reply("\n".join(lines))
+                lines.append("\n回复本条消息序号可查看链接")
+                await self._reply_records(event, "\n".join(lines), display_records)
             else:
                 await event.reply("暂无记录")
             return
@@ -421,7 +535,8 @@ class ArkRecPlugin(NcatBotPlugin):
             return
 
         lines = [f'"{filters}" ({len(records)}条):']
-        for r in records[:20]:
+        display_records = records[:20]
+        for i, r in enumerate(display_records, 1):
             team = json.loads(r["team_json"])
             names = ",".join(_team_member_name(t) for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
@@ -429,14 +544,15 @@ class ArkRecPlugin(NcatBotPlugin):
             is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
             tag = "" if is_current else " [旧]"
             lines.append(
-                f"\n{r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
+                f"\n[{i}] {r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
                 f"阵容: {names}\n"
-                f"投稿: {r['raider']} | {r.get('url','')}"
+                f"投稿: {r['raider']}"
             )
         if len(records) > 20:
             lines.append(f"\n... 共 {len(records)} 条，仅显示前 20 条")
+        lines.append("\n回复本条消息序号可查看链接")
 
-        await event.reply("\n".join(lines))
+        await self._reply_records(event, "\n".join(lines), display_records)
 
     @command_registry.command("arkrec_top", description="最近 N 条记录")
     @param(name="count", default="20", help="数量")
@@ -455,16 +571,18 @@ class ArkRecPlugin(NcatBotPlugin):
             await event.reply("暂无记录")
             return
         lines = [f"最近 {n} 条记录:"]
-        for r in records[:20]:
+        display_records = records[:20]
+        for i, r in enumerate(display_records, 1):
             team = json.loads(r["team_json"])
             names = ",".join(_team_member_name(t) for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
             lines.append(
-                f"\n{r['operation']} {r['cn_name']} [{cats}]\n"
+                f"\n[{i}] {r['operation']} {r['cn_name']} [{cats}]\n"
                 f"阵容: {names}\n"
-                f"投稿: {r['raider']} | {r.get('url','')}"
+                f"投稿: {r['raider']}"
             )
-        await event.reply("\n".join(lines))
+        lines.append("\n回复本条消息序号可查看链接")
+        await self._reply_records(event, "\n".join(lines), display_records)
 
     @command_registry.command("arkrec_op", description="查关卡信息")
     @param(name="operation", default="", help="关卡号 如 1-7")

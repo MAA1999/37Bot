@@ -1,32 +1,26 @@
 """全量同步脚本 —— 删旧库 → 拉全量
 
 用法: uv run python -m plugins.arkrec.sync_now
-前提: 已通过 /arkrec_config 配置账号
+公开数据无需登录，使用游客模式。
 """
 import asyncio
-import json
 from pathlib import Path
 
-from plugins.arkrec.auth import ArkRecAuth
+import httpx
+
 from plugins.arkrec.db import ArkRecDB
 from plugins.arkrec.api import full_sync
+
+CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/147.0.0.0 Safari/537.36"
+)
 
 
 async def main():
     data_dir = Path("data/ArkRecPlugin")
     data_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg_path = data_dir / "config.json"
-    if not cfg_path.exists():
-        print("请先在群里私聊机器人执行 /arkrec_config <email> <password> 配置账号")
-        return
-
-    cfg = json.loads(cfg_path.read_text("utf-8"))
-    email = cfg.get("email", "")
-    password = cfg.get("password", "")
-    if not email or not password:
-        print("账号未配置，请先 /arkrec_config")
-        return
 
     db_path = data_dir / "arkrec.db"
     if db_path.exists():
@@ -36,19 +30,18 @@ async def main():
     db = ArkRecDB(db_path)
     print("数据库初始化完成")
 
-    auth = ArkRecAuth(data_dir, email, password)
-    client = await auth.get_client()
+    async with httpx.AsyncClient(
+        headers={"User-Agent": CHROME_UA},
+        timeout=30,
+    ) as client:
+        sem = asyncio.Semaphore(5)
 
-    sem = asyncio.Semaphore(5)
+        print("开始全量同步...")
+        total = await full_sync(db, client, sem)
+        print(f"全量同步完成: {total} 条记录")
 
-    print("开始全量同步...")
-    total = await full_sync(db, client, sem)
-    print(f"全量同步完成: {total} 条记录")
-
-    count = db.get_record_count()
-    print(f"数据库总记录: {count} 条")
-
-    await auth.close()
+        count = db.get_record_count()
+        print(f"数据库总记录: {count} 条")
 
 
 if __name__ == "__main__":

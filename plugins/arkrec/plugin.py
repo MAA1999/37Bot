@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 
+import httpx
 from ncatbot.plugin_system import NcatBotPlugin, command_registry, param
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.utils import get_log
@@ -17,6 +18,12 @@ from .api import full_sync, incremental_sync
 logger = get_log("ArkRec")
 
 SYNC_INTERVAL = 120  # 增量同步间隔（秒）
+
+CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/147.0.0.0 Safari/537.36"
+)
 
 
 class ArkRecPlugin(NcatBotPlugin):
@@ -31,14 +38,27 @@ class ArkRecPlugin(NcatBotPlugin):
 
         self.db = ArkRecDB(self.data_dir / "arkrec.db")
         self._auth: ArkRecAuth | None = None
+        self._tourist_client: httpx.AsyncClient | None = None
         self._synced = False
 
         # 加载配置
         self.cfg = self._load_config()
         self.subs: dict[str, GroupSubscription] = self._load_subscriptions()
+        self._pushed_state: dict[str, str]
+        self._pending_ids: dict[str, list[str]]
+        self._pushed_state, self._pending_ids = self._load_push_state()
 
-        # 启动后台任务
-        asyncio.create_task(self._sync_loop())
+        # 启动后台任务（保存引用以便卸载时 cancel）
+        self._sync_task = asyncio.create_task(self._sync_loop())
+
+    async def on_unload(self):
+        self._sync_task.cancel()
+        if self._tourist_client:
+            await self._tourist_client.aclose()
+            self._tourist_client = None
+        if self._auth:
+            await self._auth.close()
+            self._auth = None
 
     # ====== 配置 ======
 
@@ -73,6 +93,30 @@ class ArkRecPlugin(NcatBotPlugin):
             } for gid, s in self.subs.items()}, ensure_ascii=False, indent=2),
             encoding="utf-8")
 
+    def _load_push_state(self) -> tuple[dict[str, str], dict[str, list[str]]]:
+        p = self.data_dir / "push_state.json"
+        if p.exists():
+            try:
+                data = json.loads(p.read_text("utf-8"))
+                return data.get("pushed", {}), data.get("pending", {})
+            except Exception:
+                pass
+        return {}, {}
+
+    def _save_push_state(self):
+        (self.data_dir / "push_state.json").write_text(json.dumps({
+            "pushed": self._pushed_state,
+            "pending": self._pending_ids,
+        }, ensure_ascii=False), encoding="utf-8")
+
+    def _get_tourist_client(self) -> httpx.AsyncClient:
+        if self._tourist_client is None:
+            self._tourist_client = httpx.AsyncClient(
+                headers={"User-Agent": CHROME_UA},
+                timeout=30,
+            )
+        return self._tourist_client
+
     def _get_sub(self, group_id: str) -> GroupSubscription:
         if group_id not in self.subs:
             self.subs[group_id] = GroupSubscription()
@@ -101,42 +145,78 @@ class ArkRecPlugin(NcatBotPlugin):
         await asyncio.sleep(10)
         while True:
             try:
-                auth = await self._get_auth()
-                if auth:
-                    client = await auth.get_client()
+                client = self._get_tourist_client()
 
-                    if not self._synced:
-                        count = self.db.get_record_count()
-                        if count == 0:
-                            logger.info("数据库为空，开始全量同步...")
-                            sem = asyncio.Semaphore(5)
-                            await full_sync(self.db, client, sem)
-                        self._synced = True
+                if not self._synced:
+                    count = self.db.get_record_count()
+                    if count == 0:
+                        logger.info("数据库为空，开始全量同步...")
+                        sem = asyncio.Semaphore(5)
+                        await full_sync(self.db, client, sem)
+                    self._synced = True
 
-                    await incremental_sync(self.db, client)
-                    await self._push_new_records(client)
-                else:
-                    logger.debug("未配置账号，跳过同步")
+                new_ids = await incremental_sync(self.db, client)
+                await self._push_new_records(new_ids)
             except Exception as e:
                 logger.error(f"同步异常: {e}")
 
             await asyncio.sleep(SYNC_INTERVAL)
 
-    async def _push_new_records(self, client: "httpx.AsyncClient"):
-        """检查新记录，匹配订阅并推送"""
-        new_records = self.db.query_latest(limit=20)
+    async def _push_new_records(self, new_ids: list[str]):
+        """推送匹配订阅的记录，每群每轮最多 3 条。
+        未发送的暂存到 per-group pending 队列，下轮优先补推 pending 再推新记录。
+        """
+        new_records = self.db.get_records_by_ids(new_ids) if new_ids else []
+
         for group_id, sub in self.subs.items():
             if not sub.enabled:
                 continue
-            msgs = []
+
+            # 收集 pending 候选（上次未发完的），按 _id 升序
+            pending = self._pending_ids.get(group_id, [])
+            pending_records = self.db.get_records_by_ids(pending) if pending else []
+            pending_matched = []
+            for r in pending_records:
+                if self._matches_sub(r, sub):
+                    pending_matched.append((r["_id"], self._format_record(r)))
+            pending_matched.sort(key=lambda x: x[0])
+
+            # 本轮新增匹配，同样按 _id 升序
+            new_matched = []
             for r in new_records:
                 if self._matches_sub(r, sub):
-                    msgs.append(self._format_record(r))
-            for msg in msgs[:3]:  # 每次最多推 3 条
+                    new_matched.append((r["_id"], self._format_record(r)))
+            new_matched.sort(key=lambda x: x[0])
+
+            # pending 优先 + 新记录追加
+            all_candidates = pending_matched + new_matched
+
+            # 发送前 3 条
+            sent_ids = []
+            failed_ids = []
+            for rid, msg in all_candidates[:3]:
                 try:
                     await self.api.post_group_msg(group_id, text=msg)
+                    sent_ids.append(rid)
                 except Exception as e:
                     logger.error(f"推送失败 group={group_id}: {e}")
+                    failed_ids.append(rid)
+
+            # 发送失败的 + 超出 3 条的都回到 pending
+            unsent = failed_ids + [rid for rid, _ in all_candidates[3:]]
+            if unsent:
+                self._pending_ids[group_id] = unsent
+            else:
+                self._pending_ids.pop(group_id, None)
+
+            # 游标只推进到本轮已发送的最大 _id
+            if sent_ids:
+                max_sent = max(sent_ids)
+                last_id = self._pushed_state.get(group_id, "")
+                if max_sent > last_id:
+                    self._pushed_state[group_id] = max_sent
+
+        self._save_push_state()
 
     def _matches_sub(self, record: dict, sub: GroupSubscription) -> bool:
         cats = json.loads(record.get("category_json", "[]"))
@@ -218,6 +298,8 @@ class ArkRecPlugin(NcatBotPlugin):
     @command_registry.command("arkrec_config", description="[root] 配置账号（私聊）")
     async def cmd_config(self, event: PrivateMessageEvent,
                          email: str = "", password: str = ""):
+        """注意：密码以明文保存在 data/ArkRecPlugin/config.json，仅用于 wiki 登录。
+        公开数据同步不需要账号，此功能为可选。"""
         if event.message_type != "private":
             await event.reply("请私聊使用此命令")
             return
@@ -295,7 +377,15 @@ class ArkRecPlugin(NcatBotPlugin):
         records = self.db.query_records(
             operator=operator, operation=operation, category=category, mode=mode, grp=grp, limit=200)
 
-        records = self._mark_current(records)
+        # 基于全关卡数据判当前纪录，避免在筛选子集里误判
+        if operation:
+            full = self.db.query_records(operation=operation, limit=500)
+            full = self._mark_current(full)
+            cur_map = {r["_id"]: r.get("_current_cats", set()) for r in full}
+            for r in records:
+                r["_current_cats"] = cur_map.get(r["_id"], set())
+        else:
+            records = self._mark_current(records)
 
         filters = " ".join(f for f in [operation, category, operator] if f)
         if not records:
@@ -384,13 +474,17 @@ class ArkRecPlugin(NcatBotPlugin):
 
         val = value.strip()
         if re.match(r"^[A-Za-z]{1,4}[-_ ]?\d", val):
-            sub.operations.append(val.upper().replace(" ", "-"))
+            op_val = val.upper().replace(" ", "-")
+            if op_val not in sub.operations:
+                sub.operations.append(op_val)
             await event.reply(f"已订阅关卡: {val}")
         elif self.db.query_records(category=val, limit=1):
-            sub.categories.append(val)
+            if val not in sub.categories:
+                sub.categories.append(val)
             await event.reply(f"已订阅分类: {val}")
         else:
-            sub.operators.append(val)
+            if val not in sub.operators:
+                sub.operators.append(val)
             await event.reply(f"已订阅干员: {val}")
 
         self._save_subscriptions()

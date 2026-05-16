@@ -60,6 +60,7 @@ async def fetch_latest_records(
     """获取最新记录（增量）"""
     resp = await client.post(
         f"{WIKI_BASE}/record/latest-records",
+        headers=RECORD_HEADERS,
         json={"skip": skip},
     )
     if resp.status_code != 200:
@@ -86,48 +87,47 @@ async def fetch_categories(client: httpx.AsyncClient) -> dict:
 
 async def full_sync(db, client: httpx.AsyncClient, sem: asyncio.Semaphore):
     """全量同步：拉 menu → 每关拉 records → 入库。
-    已存在 _id 的记录跳过，只插新数据。
+    已存在 _id 的记录更新字段，新记录插入。
     """
     ops = await fetch_menu(client)
-    # 先存关卡元数据
     from plugins.arkrec.db import ArkRecDB
     if isinstance(db, ArkRecDB):
         db.upsert_operations(ops)
 
-    total = 0
+    total_new = 0
 
     async def sync_one(op):
-        nonlocal total
+        nonlocal total_new
         async with sem:
             records = await fetch_records_for_operation(
                 client, op["operation"], op["cn_name"]
             )
             if records:
-                n = db.insert_records(records)
-                total += n
-                if n > 0:
-                    logger.debug(f"  {op['operation']}: +{n}")
+                new_ids = db.insert_records(records)
+                total_new += len(new_ids)
+                if new_ids:
+                    logger.debug(f"  {op['operation']}: +{len(new_ids)}")
 
     # 分批并发
     batch_size = 50
     for i in range(0, len(ops), batch_size):
         batch = ops[i : i + batch_size]
         await asyncio.gather(*[sync_one(op) for op in batch])
-        logger.info(f"全量同步进度: {min(i + batch_size, len(ops))}/{len(ops)}, 新增 {total}")
+        logger.info(f"全量同步进度: {min(i + batch_size, len(ops))}/{len(ops)}, 新增 {total_new}")
 
-    logger.info(f"全量同步完成: {len(ops)} 关, 新增 {total} 条记录")
-    return total
+    logger.info(f"全量同步完成: {len(ops)} 关, 新增 {total_new} 条记录")
+    return total_new
 
 
-async def incremental_sync(db, client: httpx.AsyncClient):
-    """增量同步：拉 latest-records 最近几页"""
-    total = 0
+async def incremental_sync(db, client: httpx.AsyncClient) -> list[str]:
+    """增量同步：拉 latest-records 最近几页，返回本次新增的 _id 列表"""
+    all_new_ids = []
     for skip in (0, 2, 22, 42):
         records = await fetch_latest_records(client, skip)
         if not records:
             break
-        n = db.insert_records(records)
-        total += n
-    if total:
-        logger.info(f"增量同步: +{total} 条")
-    return total
+        new_ids = db.insert_records(records)
+        all_new_ids.extend(new_ids)
+    if all_new_ids:
+        logger.info(f"增量同步: +{len(all_new_ids)} 条")
+    return all_new_ids

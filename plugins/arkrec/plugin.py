@@ -405,6 +405,16 @@ class ArkRecPlugin(NcatBotPlugin):
             return matches[0]
         return upper
 
+    def _resolve_category(self, kw: str) -> str:
+        """分类名允许省略常见的“队”后缀，如 特种 -> 特种队。"""
+        if self.db.query_records(category=kw, limit=1):
+            return kw
+        if not kw.endswith("队"):
+            candidate = f"{kw}队"
+            if self.db.query_records(category=candidate, limit=1):
+                return candidate
+        return ""
+
     # ====== 新旧分类 ======
 
     @staticmethod
@@ -507,8 +517,8 @@ class ArkRecPlugin(NcatBotPlugin):
             elif re.match(r"^[A-Za-z]?[0-9]+[-_ ]?[0-9]*$", kw, re.IGNORECASE):
                 if not operation:
                     operation = self._resolve_operation(kw)
-            elif not category and self.db.query_records(category=kw, limit=1):
-                category = kw
+            elif not category and (resolved_category := self._resolve_category(kw)):
+                category = resolved_category
             elif not operator and self.db.query_records(operator=kw, limit=1):
                 operator = kw
             elif not operation:
@@ -565,7 +575,10 @@ class ArkRecPlugin(NcatBotPlugin):
             n = max(1, min(int(count), 50))
         except ValueError:
             n = 20
+            if not category:
+                category = count
         if category:
+            category = self._resolve_category(category) or category
             records = self.db.query_records(category=category, limit=n)
         else:
             records = self.db.query_latest(limit=n)
@@ -626,10 +639,10 @@ class ArkRecPlugin(NcatBotPlugin):
             if op_val not in sub.operations:
                 sub.operations.append(op_val)
             await event.reply(f"已订阅关卡: {val}")
-        elif self.db.query_records(category=val, limit=1):
-            if val not in sub.categories:
-                sub.categories.append(val)
-            await event.reply(f"已订阅分类: {val}")
+        elif resolved_category := self._resolve_category(val):
+            if resolved_category not in sub.categories:
+                sub.categories.append(resolved_category)
+            await event.reply(f"已订阅分类: {resolved_category}")
         else:
             if val not in sub.operators:
                 sub.operators.append(val)
@@ -651,9 +664,14 @@ class ArkRecPlugin(NcatBotPlugin):
             return
         sub = self._get_sub(group_id)
         val = value.strip()
+        resolved_category = self._resolve_category(val)
+        candidates = {val}
+        if resolved_category:
+            candidates.add(resolved_category)
         for lst in [sub.categories, sub.operators, sub.operations]:
-            if val in lst:
-                lst.remove(val)
+            for candidate in list(candidates):
+                if candidate in lst:
+                    lst.remove(candidate)
         self._save_subscriptions()
         await event.reply(f"已取消: {val}")
 

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import threading
 from pathlib import Path
 
 import httpx
@@ -48,7 +49,7 @@ class ArkRecPlugin(NcatBotPlugin):
 
         self.db = ArkRecDB(self.data_dir / "arkrec.db")
         self._auth: ArkRecAuth | None = None
-        self._tourist_client: httpx.AsyncClient | None = None
+        self._sync_lock = threading.Lock()
         self._synced = False
 
         # 加载配置
@@ -58,16 +59,21 @@ class ArkRecPlugin(NcatBotPlugin):
         self._pending_ids: dict[str, list[str]]
         self._pushed_state, self._pending_ids = self._load_push_state()
 
-        # 启动后台任务（保存引用以便卸载时 cancel）
-        self._sync_task = asyncio.create_task(self._sync_loop())
-        logger.info("ArkRec sync task created")
+        self.add_scheduled_task(
+            self._sync_once,
+            "arkrec_sync_initial",
+            "10s",
+            max_runs=1,
+        )
+        self.add_scheduled_task(
+            self._sync_once,
+            "arkrec_sync",
+            f"{SYNC_INTERVAL}s",
+        )
+        logger.info("ArkRec scheduled sync tasks registered")
 
-    async def on_unload(self):
-        logger.info("ArkRec on_unload start")
-        self._sync_task.cancel()
-        if self._tourist_client:
-            await self._tourist_client.aclose()
-            self._tourist_client = None
+    async def on_close(self, *args, **kwargs):
+        logger.info("ArkRec on_close start")
         if self._auth:
             await self._auth.close()
             self._auth = None
@@ -121,13 +127,11 @@ class ArkRecPlugin(NcatBotPlugin):
             "pending": self._pending_ids,
         }, ensure_ascii=False), encoding="utf-8")
 
-    def _get_tourist_client(self) -> httpx.AsyncClient:
-        if self._tourist_client is None:
-            self._tourist_client = httpx.AsyncClient(
-                headers={"User-Agent": CHROME_UA},
-                timeout=30,
-            )
-        return self._tourist_client
+    def _create_tourist_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers={"User-Agent": CHROME_UA},
+            timeout=30,
+        )
 
     def _get_sub(self, group_id: str) -> GroupSubscription:
         if group_id not in self.subs:
@@ -156,14 +160,13 @@ class ArkRecPlugin(NcatBotPlugin):
 
     # ====== 后台任务 ======
 
-    async def _sync_loop(self):
-        logger.info("ArkRec sync loop start")
-        await asyncio.sleep(10)
-        while True:
-            try:
-                logger.info("ArkRec sync tick")
-                client = self._get_tourist_client()
-
+    async def _sync_once(self):
+        if not self._sync_lock.acquire(blocking=False):
+            logger.info("ArkRec sync skipped: previous sync still running")
+            return
+        try:
+            logger.info("ArkRec sync tick")
+            async with self._create_tourist_client() as client:
                 if not self._synced:
                     count = self.db.get_record_count()
                     logger.info(f"ArkRec record count before initial sync: {count}")
@@ -177,10 +180,10 @@ class ArkRecPlugin(NcatBotPlugin):
                 logger.info(f"ArkRec incremental done: {len(new_ids)} new ids")
                 await self._push_new_records(new_ids)
                 logger.info("ArkRec push state saved")
-            except Exception as e:
-                logger.error(f"同步异常: {e}")
-
-            await asyncio.sleep(SYNC_INTERVAL)
+        except Exception as e:
+            logger.error(f"同步异常: {e}")
+        finally:
+            self._sync_lock.release()
 
     async def _push_new_records(self, new_ids: list[str]):
         """推送匹配订阅的记录，每群每轮最多 3 条。

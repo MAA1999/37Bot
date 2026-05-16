@@ -26,6 +26,14 @@ CHROME_UA = (
 )
 
 
+def _team_member_name(member) -> str:
+    if isinstance(member, dict):
+        return member.get("name", "")
+    if isinstance(member, str):
+        return member
+    return ""
+
+
 class ArkRecPlugin(NcatBotPlugin):
     name = "ArkRecPlugin"
     version = "2.0.0"
@@ -221,7 +229,7 @@ class ArkRecPlugin(NcatBotPlugin):
     def _matches_sub(self, record: dict, sub: GroupSubscription) -> bool:
         cats = json.loads(record.get("category_json", "[]"))
         team = json.loads(record.get("team_json", "[]"))
-        op_names = [t.get("name", "") for t in team]
+        op_names = [_team_member_name(t) for t in team]
         operation = record.get("operation", "")
 
         for c in sub.categories:
@@ -238,7 +246,7 @@ class ArkRecPlugin(NcatBotPlugin):
     def _format_record(self, r: dict) -> str:
         team = json.loads(r.get("team_json", "[]"))
         cats = json.loads(r.get("category_json", "[]"))
-        names = ",".join(t.get("name", "") for t in team)
+        names = ",".join(_team_member_name(t) for t in team)
         return (
             f"新纪录: {r['operation']} {r['cn_name']} ({r['operationType']})\n"
             f"阵容: {names}\n"
@@ -338,7 +346,7 @@ class ArkRecPlugin(NcatBotPlugin):
                 lines = [f"最近常规队记录:"]
                 for r in records[:20]:
                     team = json.loads(r["team_json"])
-                    names = ",".join(t.get("name", "") for t in team[:5])
+                    names = ",".join(_team_member_name(t) for t in team[:5])
                     cats = ",".join(json.loads(r["category_json"]))
                     mode_label = "突袭" if r["operationType"] == "challenge" else ""
                     is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
@@ -395,7 +403,7 @@ class ArkRecPlugin(NcatBotPlugin):
         lines = [f'"{filters}" ({len(records)}条):']
         for r in records[:20]:
             team = json.loads(r["team_json"])
-            names = ",".join(t.get("name", "") for t in team[:5])
+            names = ",".join(_team_member_name(t) for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
             mode = "突袭" if r["operationType"] == "challenge" else ""
             is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
@@ -429,7 +437,7 @@ class ArkRecPlugin(NcatBotPlugin):
         lines = [f"最近 {n} 条记录:"]
         for r in records[:20]:
             team = json.loads(r["team_json"])
-            names = ",".join(t.get("name", "") for t in team[:5])
+            names = ",".join(_team_member_name(t) for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
             lines.append(
                 f"\n{r['operation']} {r['cn_name']} [{cats}]\n"

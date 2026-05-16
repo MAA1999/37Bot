@@ -10,6 +10,14 @@ from ncatbot.utils import get_log
 logger = get_log("ArkRec")
 
 
+def _team_member_name(member) -> str:
+    if isinstance(member, dict):
+        return member.get("name", "")
+    if isinstance(member, str):
+        return member
+    return ""
+
+
 class ArkRecDB:
     def __init__(self, db_path: Path):
         self.db_path = str(db_path)
@@ -104,7 +112,7 @@ class ArkRecDB:
             for cat in json.loads(r[1] or "[]"):
                 c.execute("INSERT OR IGNORE INTO record_categories VALUES (?,?)", (_id, cat))
             for t in json.loads(r[2] or "[]"):
-                name = t.get("name", "")
+                name = _team_member_name(t)
                 if name:
                     c.execute("INSERT OR IGNORE INTO record_operators VALUES (?,?)", (_id, name))
         c.commit()
@@ -185,7 +193,7 @@ class ArkRecDB:
                     c.execute("INSERT OR IGNORE INTO record_categories VALUES (?,?)", (_id, cat))
                 c.execute("DELETE FROM record_operators WHERE record_id=?", (_id,))
                 for t in entry.get("team", []):
-                    name = t.get("name", "")
+                    name = _team_member_name(t)
                     if name:
                         c.execute("INSERT OR IGNORE INTO record_operators VALUES (?,?)", (_id, name))
             c.commit()

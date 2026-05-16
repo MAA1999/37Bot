@@ -317,7 +317,13 @@ class ArkRecPlugin(NcatBotPlugin):
             for mid, _ in ordered[: len(self._link_cache) - LINK_CACHE_LIMIT]:
                 self._link_cache.pop(mid, None)
 
-    async def _reply_records(self, event: GroupMessageEvent, text: str, records: list[dict]):
+    async def _reply_records(
+        self,
+        event: GroupMessageEvent,
+        text: str,
+        records: list[dict],
+        old_records: list[dict] | None = None,
+    ):
         resp = await event.reply(text)
         message_id = self._extract_message_id(resp)
         if not message_id:
@@ -337,11 +343,12 @@ class ArkRecPlugin(NcatBotPlugin):
                 "raider": r.get("raider", ""),
                 "url": url,
             })
-        if has_url:
+        if has_url or old_records:
             self._link_cache[message_id] = {
                 "group_id": str(event.group_id),
                 "created_at": time.time(),
                 "links": links,
+                "old_records": old_records or [],
             }
             self._prune_link_cache()
 
@@ -366,6 +373,23 @@ class ArkRecPlugin(NcatBotPlugin):
             return
 
         text = event.message.concatenate_text().strip()
+        if text in ("旧", "旧纪录", "旧记录", "old"):
+            old_records = cache.get("old_records", [])
+            if not old_records:
+                await event.reply("没有旧纪录")
+                return
+            display_records = old_records[:20]
+            lines = [f"旧纪录 ({len(old_records)}条):"]
+            lines.extend(
+                self._format_record_line(r, i, "", show_old_tag=True)
+                for i, r in enumerate(display_records, 1)
+            )
+            if len(old_records) > 20:
+                lines.append(f"\n... 共 {len(old_records)} 条，仅显示前 20 条")
+            lines.append("\n回复本条消息序号可查看链接")
+            await self._reply_records(event, "\n".join(lines), display_records)
+            return
+
         match = re.search(r"\d+", text)
         if match:
             index = int(match.group(0))
@@ -387,6 +411,44 @@ class ArkRecPlugin(NcatBotPlugin):
             f"[{index}] {item['operation']} {item['cn_name']}\n"
             f"投稿: {item['raider']}\n"
             f"{item['url']}"
+        )
+
+    def _is_current_record(self, record: dict, category: str = "") -> bool:
+        current_cats = record.get("_current_cats", set())
+        if category:
+            return any(category in c for c in current_cats)
+        return bool(current_cats)
+
+    def _split_current_records(
+        self, records: list[dict], category: str = ""
+    ) -> tuple[list[dict], list[dict]]:
+        current = []
+        old = []
+        for r in records:
+            if self._is_current_record(r, category):
+                current.append(r)
+            else:
+                old.append(r)
+        return current, old
+
+    def _format_record_line(
+        self,
+        r: dict,
+        index: int,
+        category: str = "",
+        show_old_tag: bool = False,
+    ) -> str:
+        team = json.loads(r["team_json"])
+        names = ",".join(_team_member_name(t) for t in team[:5])
+        cats = ",".join(json.loads(r["category_json"]))
+        mode = "突袭" if r["operationType"] == "challenge" else ""
+        tag = ""
+        if show_old_tag:
+            tag = " [旧]"
+        return (
+            f"\n[{index}] {r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
+            f"阵容: {names}\n"
+            f"投稿: {r['raider']}"
         )
 
     # ====== 关卡名称解析 ======
@@ -487,22 +549,22 @@ class ArkRecPlugin(NcatBotPlugin):
             records = self.db.query_records(category=category, limit=200)
             records = self._mark_current(records)
             if records:
-                lines = [f"最近常规队记录:"]
-                display_records = records[:20]
-                for i, r in enumerate(display_records, 1):
-                    cats = ",".join(json.loads(r["category_json"]))
-                    mode_label = "突袭" if r["operationType"] == "challenge" else ""
-                    is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
-                    tag = "" if is_current else " [旧]"
-                    team = json.loads(r["team_json"])
-                    names = ",".join(_team_member_name(t) for t in team[:5])
-                    lines.append(
-                        f"\n[{i}] {r['operation']} {r['cn_name']} {mode_label} [{cats}]{tag}\n"
-                        f"阵容: {names}\n"
-                        f"投稿: {r['raider']}"
-                    )
-                lines.append("\n回复本条消息序号可查看链接")
-                await self._reply_records(event, "\n".join(lines), display_records)
+                current_records, old_records = self._split_current_records(records, category)
+                lines = [f"最近常规队当前纪录: {len(current_records)} 条"]
+                display_records = current_records[:20]
+                lines.extend(
+                    self._format_record_line(r, i, category)
+                    for i, r in enumerate(display_records, 1)
+                )
+                if len(current_records) > 20:
+                    lines.append(f"\n... 当前纪录共 {len(current_records)} 条，仅显示前 20 条")
+                if old_records:
+                    lines.append(f"\n旧纪录 {len(old_records)} 条，回复本条消息“旧”可查看")
+                if display_records:
+                    lines.append("\n回复本条消息序号可查看链接")
+                await self._reply_records(
+                    event, "\n".join(lines), display_records, old_records=old_records
+                )
             else:
                 await event.reply("暂无记录")
             return
@@ -546,25 +608,23 @@ class ArkRecPlugin(NcatBotPlugin):
             await event.reply(f"未找到 {' '.join(parts)} 相关记录")
             return
 
-        lines = [f'"{filters}" ({len(records)}条):']
-        display_records = records[:20]
-        for i, r in enumerate(display_records, 1):
-            team = json.loads(r["team_json"])
-            names = ",".join(_team_member_name(t) for t in team[:5])
-            cats = ",".join(json.loads(r["category_json"]))
-            mode = "突袭" if r["operationType"] == "challenge" else ""
-            is_current = any(category in c for c in r.get("_current_cats", set())) if category else bool(r.get("_current_cats"))
-            tag = "" if is_current else " [旧]"
-            lines.append(
-                f"\n[{i}] {r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
-                f"阵容: {names}\n"
-                f"投稿: {r['raider']}"
-            )
-        if len(records) > 20:
-            lines.append(f"\n... 共 {len(records)} 条，仅显示前 20 条")
-        lines.append("\n回复本条消息序号可查看链接")
+        current_records, old_records = self._split_current_records(records, category)
+        lines = [f'"{filters}" 当前纪录 {len(current_records)} 条']
+        display_records = current_records[:20]
+        lines.extend(
+            self._format_record_line(r, i, category)
+            for i, r in enumerate(display_records, 1)
+        )
+        if len(current_records) > 20:
+            lines.append(f"\n... 当前纪录共 {len(current_records)} 条，仅显示前 20 条")
+        if old_records:
+            lines.append(f"\n旧纪录 {len(old_records)} 条，回复本条消息“旧”可查看")
+        if display_records:
+            lines.append("\n回复本条消息序号可查看链接")
 
-        await self._reply_records(event, "\n".join(lines), display_records)
+        await self._reply_records(
+            event, "\n".join(lines), display_records, old_records=old_records
+        )
 
     @command_registry.command("arkrec_top", description="最近 N 条记录")
     @param(name="count", default="20", help="数量")

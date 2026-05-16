@@ -362,22 +362,32 @@ class ArkRecPlugin(NcatBotPlugin):
 body {{
   margin: 0;
   padding: 24px;
-  background: #eef1f5;
+  background:
+    linear-gradient(135deg, rgba(31, 111, 235, .12), rgba(245, 158, 11, .08) 42%, rgba(15, 23, 42, .04)),
+    radial-gradient(circle at 14% 10%, rgba(31, 111, 235, .16), transparent 26%),
+    radial-gradient(circle at 88% 8%, rgba(20, 184, 166, .12), transparent 24%),
+    linear-gradient(rgba(255,255,255,.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.55) 1px, transparent 1px),
+    #eef2f7;
+  background-size: auto, auto, auto, 18px 18px, 18px 18px, auto;
   color: #172033;
   font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
 }}
 .card {{
   width: 760px;
   margin: 0 auto;
-  background: #ffffff;
-  border: 1px solid #dfe5ee;
+  background: rgba(255, 255, 255, .96);
+  border: 1px solid rgba(212, 220, 232, .95);
   border-radius: 8px;
   overflow: hidden;
+  box-shadow: 0 18px 46px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .06);
 }}
 .title {{
   padding: 18px 22px 14px;
   border-bottom: 1px solid #e5eaf1;
-  background: #f8fafc;
+  background:
+    linear-gradient(90deg, rgba(31, 111, 235, .10), rgba(20, 184, 166, .07)),
+    #f8fafc;
   font-size: 22px;
   font-weight: 700;
   letter-spacing: 0;

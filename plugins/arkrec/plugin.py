@@ -330,6 +330,11 @@ class ArkRecPlugin(NcatBotPlugin):
             cat_html = "".join(
                 f'<span class="chip">{esc(cat)}</span>' for cat in categories[:8]
             )
+            remark = r.get("remark1", "")
+            remark_html = (
+                f'<div class="meta remark"><span>备注</span>{esc(remark)}</div>'
+                if remark else ""
+            )
             rows.append(f"""
 <section class="record">
   <div class="idx">{i}</div>
@@ -342,6 +347,7 @@ class ArkRecPlugin(NcatBotPlugin):
     <div class="cats">{cat_html}</div>
     <div class="meta"><span>阵容</span>{esc(names or "-")}</div>
     <div class="meta"><span>投稿</span>{esc(r.get("raider", "") or "-")}</div>
+    {remark_html}
   </div>
 </section>""")
 
@@ -688,6 +694,8 @@ body {{
         names = ",".join(_team_member_name(t) for t in team[:5])
         cats = ",".join(json.loads(r["category_json"]))
         mode = self._record_difficulty_label(r)
+        remark = r.get("remark1", "")
+        remark_line = f"\n备注: {remark}" if remark else ""
         tag = ""
         if show_old_tag:
             tag = " [旧]"
@@ -695,6 +703,7 @@ body {{
             f"\n[{index}] {r['operation']} {r['cn_name']} {mode} [{cats}]{tag}\n"
             f"阵容: {names}\n"
             f"投稿: {r['raider']}"
+            f"{remark_line}"
         )
 
     # ====== 关卡名称解析 ======

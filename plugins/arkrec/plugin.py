@@ -24,6 +24,23 @@ SYNC_INTERVAL = 120  # 增量同步间隔（秒）
 LINK_CACHE_TTL = 3600
 LINK_CACHE_LIMIT = 200
 
+CATEGORY_ALIASES = {
+    "wzw": "毋作吾",
+    "201": "精二1级",
+    "180": "精一满级",
+    "101": "精一1级",
+    "无精满": "无精英满级",
+    "2015": "精二1级五星队",
+    "1604": "精一满级四星队",
+    "1014": "精一1级四星队",
+    "无精满四星": "无精英满级四星队",
+    "自忍": "自闭忍宗",
+    "孤忍": "孤岛忍宗",
+    "深海": "深海猎人队",
+}
+
+CATEGORY_SUFFIXES = ("队", "级", "流", "组")
+
 CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -468,11 +485,14 @@ class ArkRecPlugin(NcatBotPlugin):
         return upper
 
     def _resolve_category(self, kw: str) -> str:
-        """分类名允许省略常见的“队”后缀，如 特种 -> 特种队。"""
-        if self.db.query_records(category=kw, limit=1):
-            return kw
-        if not kw.endswith("队"):
-            candidate = f"{kw}队"
+        """分类名允许别名和省略常见后缀，如 特种 -> 特种队。"""
+        alias = CATEGORY_ALIASES.get(kw) or CATEGORY_ALIASES.get(kw.lower())
+        base = alias or kw
+        candidates = [base]
+        for suffix in CATEGORY_SUFFIXES:
+            if not base.endswith(suffix):
+                candidates.append(f"{base}{suffix}")
+        for candidate in candidates:
             if self.db.query_records(category=candidate, limit=1):
                 return candidate
         return ""

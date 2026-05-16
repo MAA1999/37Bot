@@ -599,6 +599,8 @@ class ArkRecPlugin(NcatBotPlugin):
             elif re.match(r"^[A-Za-z]?[0-9]+[-_ ]?[0-9]*$", kw, re.IGNORECASE):
                 if not operation:
                     operation = self._resolve_operation(kw)
+                elif not category and (resolved_category := self._resolve_category(kw)):
+                    category = resolved_category
             elif not category and (resolved_category := self._resolve_category(kw)):
                 category = resolved_category
             elif not operator and self.db.query_records(operator=kw, limit=1):

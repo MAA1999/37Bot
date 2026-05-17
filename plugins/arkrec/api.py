@@ -101,6 +101,22 @@ async def fetch_open_episodes(client: httpx.AsyncClient) -> list[str]:
     return data if isinstance(data, list) else []
 
 
+async def fetch_operation_info(client: httpx.AsyncClient) -> list[dict]:
+    """获取关卡一览统计。"""
+    resp = await client.get(f"{WIKI_BASE}/user/operation-info")
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, list) else []
+
+
+async def fetch_bundle_ext(client: httpx.AsyncClient) -> dict:
+    """获取扩展元数据，包括当前活动索引。"""
+    resp = await client.get(f"{WIKI_BASE}/api/bundle-ext")
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, dict) else {}
+
+
 async def full_sync(db, client: httpx.AsyncClient, sem: asyncio.Semaphore):
     """全量同步：拉 menu → 每关拉 records → 入库。
     已存在 _id 的记录更新字段，新记录插入。

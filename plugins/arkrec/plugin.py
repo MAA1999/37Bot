@@ -18,7 +18,14 @@ from ncatbot.utils import get_log
 from .auth import ArkRecAuth
 from .db import ArkRecDB
 from .config import GroupSubscription
-from .api import fetch_exclusive_operators, fetch_open_episodes, full_sync, incremental_sync
+from .api import (
+    fetch_bundle_ext,
+    fetch_exclusive_operators,
+    fetch_open_episodes,
+    fetch_operation_info,
+    full_sync,
+    incremental_sync,
+)
 
 logger = get_log("ArkRec")
 
@@ -29,6 +36,8 @@ RECORD_IMAGE_MIN_ROWS = 2
 EXCLUSIVE_CACHE_TTL = 6 * 3600
 EXCLUSIVE_IMAGE_MAX_ROWS = 24
 EXCLUSIVE_ALWAYS_OPEN_STORIES = {"主线关卡", "剿灭作战", "物资筹备", "芯片搜索"}
+BRIEF_CACHE_TTL = 6 * 3600
+BRIEF_IMAGE_MAX_ROWS = 60
 
 CATEGORY_ALIASES = {
     "wzw": "毋作吾",
@@ -90,8 +99,12 @@ class ArkRecPlugin(NcatBotPlugin):
         self._link_cache: dict[str, dict] = {}
         self._exclusive_cache: dict = {"created_at": 0.0, "data": []}
         self._open_episodes_cache: dict = {"created_at": 0.0, "data": []}
+        self._operation_info_cache: dict = {"created_at": 0.0, "data": []}
+        self._bundle_ext_cache: dict = {"created_at": 0.0, "data": {}}
         self._exclusive_lock = asyncio.Lock()
         self._open_episodes_lock = asyncio.Lock()
+        self._operation_info_lock = asyncio.Lock()
+        self._bundle_ext_lock = asyncio.Lock()
 
         self.add_scheduled_task(
             self._sync_once,
@@ -204,6 +217,54 @@ class ArkRecPlugin(NcatBotPlugin):
             self._open_episodes_cache = {"created_at": time.time(), "data": data}
             logger.info(f"ArkRec open episodes cache refreshed: {len(data)} episodes")
             return set(str(item) for item in data)
+
+    async def _get_operation_info(self, force: bool = False) -> list[dict]:
+        now = time.time()
+        cached = self._operation_info_cache.get("data") or []
+        created_at = float(self._operation_info_cache.get("created_at") or 0)
+        if cached and not force and now - created_at < BRIEF_CACHE_TTL:
+            return cached
+
+        async with self._operation_info_lock:
+            now = time.time()
+            cached = self._operation_info_cache.get("data") or []
+            created_at = float(self._operation_info_cache.get("created_at") or 0)
+            if cached and not force and now - created_at < BRIEF_CACHE_TTL:
+                return cached
+            async with self._create_tourist_client() as client:
+                data = await fetch_operation_info(client)
+            self._operation_info_cache = {"created_at": time.time(), "data": data}
+            logger.info(f"ArkRec operation info cache refreshed: {len(data)} rows")
+            return data
+
+    async def _get_bundle_ext(self, force: bool = False) -> dict:
+        now = time.time()
+        cached = self._bundle_ext_cache.get("data") or {}
+        created_at = float(self._bundle_ext_cache.get("created_at") or 0)
+        if cached and not force and now - created_at < BRIEF_CACHE_TTL:
+            return cached
+
+        async with self._bundle_ext_lock:
+            now = time.time()
+            cached = self._bundle_ext_cache.get("data") or {}
+            created_at = float(self._bundle_ext_cache.get("created_at") or 0)
+            if cached and not force and now - created_at < BRIEF_CACHE_TTL:
+                return cached
+            async with self._create_tourist_client() as client:
+                data = await fetch_bundle_ext(client)
+            self._bundle_ext_cache = {"created_at": time.time(), "data": data}
+            logger.info("ArkRec bundle-ext cache refreshed")
+            return data
+
+    async def _get_operation_rows_from_menu(self, force: bool = False) -> list[dict]:
+        rows = self.db.query_operations(limit=10000)
+        if rows and not force:
+            return rows
+        async with self._create_tourist_client() as client:
+            ops = await fetch_menu(client)
+        if ops:
+            self.db.upsert_operations(ops)
+        return self.db.query_operations(limit=10000)
 
     def _get_sub(self, group_id: str) -> GroupSubscription:
         if group_id not in self.subs:
@@ -1150,6 +1211,261 @@ body {{
                     pass
         await event.reply(f"{title}\n{subtitle}\n图片生成或发送失败")
 
+    # ====== 关卡一览 ======
+
+    @staticmethod
+    def _brief_metric(row: dict, category: str, mode: str) -> dict | None:
+        value = row.get(category)
+        if not isinstance(value, dict):
+            return None
+        metric = value.get(mode)
+        return metric if isinstance(metric, dict) else None
+
+    @staticmethod
+    def _brief_has_record(row: dict, category: str) -> bool:
+        value = row.get(category)
+        if not isinstance(value, dict):
+            return False
+        for mode in ("normal", "challenge"):
+            metric = value.get(mode)
+            if isinstance(metric, dict) and (metric.get("count") or 0) > 0:
+                return True
+        return False
+
+    @staticmethod
+    def _brief_current_episode_names(bundle_ext: dict, operations: list[dict]) -> set[str]:
+        indexes = bundle_ext.get("currentEpisode") or []
+        if not isinstance(indexes, list) or len(indexes) < 2:
+            return set()
+        story_index = indexes[0]
+        episode_indexes = [indexes[1]]
+        if len(indexes) >= 6 and indexes[4] >= 0 and indexes[5] >= 0:
+            episode_indexes.append(indexes[5])
+
+        stories = []
+        for op in operations:
+            story = op.get("story", "")
+            episode = op.get("episode", "")
+            if story and episode and story not in [item[0] for item in stories]:
+                stories.append((story, []))
+            if story and episode:
+                for item_story, episodes in stories:
+                    if item_story == story and episode not in episodes:
+                        episodes.append(episode)
+                        break
+        if story_index < 0 or story_index >= len(stories):
+            return set()
+        current = set()
+        episodes = stories[story_index][1]
+        for episode_index in episode_indexes:
+            if 0 <= episode_index < len(episodes):
+                current.add(episodes[episode_index])
+        return current
+
+    def _brief_rows(
+        self,
+        operation_info: list[dict],
+        operations: list[dict],
+        bundle_ext: dict,
+        category: str,
+        scope: str,
+        show_all: bool,
+        empty_only: bool,
+        limit: int,
+    ) -> tuple[list[dict], int, str]:
+        info_map = {
+            (row.get("operation", ""), row.get("cn_name", "")): row
+            for row in operation_info
+        }
+        current_episodes = self._brief_current_episode_names(bundle_ext, operations)
+        selected = []
+        for op in operations:
+            if scope == "current" and op.get("episode") not in current_episodes:
+                continue
+            row = dict(info_map.get((op.get("operation", ""), op.get("cn_name", "")), {}))
+            row.setdefault("story", op.get("story", ""))
+            row.setdefault("episode", op.get("episode", ""))
+            row.setdefault("operation", op.get("operation", ""))
+            row.setdefault("cn_name", op.get("cn_name", ""))
+            has_record = self._brief_has_record(row, category)
+            if not show_all and not has_record:
+                continue
+            if empty_only and has_record:
+                continue
+            selected.append(row)
+        return selected[:limit], len(selected), "、".join(sorted(current_episodes)) or "当前活动"
+
+    @staticmethod
+    def _brief_image_html(
+        title: str,
+        subtitle: str,
+        rows: list[dict],
+        category: str,
+        total_count: int,
+    ) -> str:
+        def esc(value) -> str:
+            return html.escape(str(value or ""), quote=True)
+
+        body = []
+        for i, row in enumerate(rows, 1):
+            normal = ArkRecPlugin._brief_metric(row, category, "normal")
+            challenge = ArkRecPlugin._brief_metric(row, category, "challenge")
+            normal_num = normal.get("num") if normal else None
+            normal_count = normal.get("count") if normal else 0
+            challenge_num = challenge.get("num") if challenge else None
+            challenge_count = challenge.get("count") if challenge else 0
+            empty = not normal_count and not challenge_count
+            body.append(f"""
+<tr class="{ 'empty' if empty else '' }">
+  <td class="idx">{i}</td>
+  <td>
+    <div class="stage"><span class="code">{esc(row.get("operation", ""))}</span><span>{esc(row.get("cn_name", ""))}</span></div>
+    <div class="episode">{esc(row.get("episode", ""))}</div>
+  </td>
+  <td class="num">{esc(normal_num if normal_num is not None and normal_count else "-")}</td>
+  <td class="count">{esc(normal_count or "-")}</td>
+  <td class="num challenge">{esc(challenge_num if challenge_num is not None and challenge_count else "-")}</td>
+  <td class="count">{esc(challenge_count or "-")}</td>
+</tr>""")
+
+        notes = []
+        if total_count > len(rows):
+            notes.append(f"共 {total_count} 关，仅显示前 {len(rows)} 关")
+        notes.append("无纪录关卡会以灰色显示")
+        note_html = "".join(f"<div>{esc(note)}</div>" for note in notes)
+
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, .10), rgba(20, 184, 166, .10) 48%, rgba(245, 158, 11, .07)),
+    linear-gradient(rgba(255,255,255,.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.55) 1px, transparent 1px),
+    #eef3f7;
+  background-size: auto, 18px 18px, 18px 18px, auto;
+  color: #172033;
+  font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+}}
+.card {{
+  width: 860px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, .97);
+  border: 1px solid rgba(210, 220, 230, .95);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 18px 46px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .06);
+}}
+.title {{
+  padding: 18px 22px 8px;
+  background: linear-gradient(90deg, rgba(37, 99, 235, .10), rgba(20, 184, 166, .08)), #f8fafc;
+  font-size: 24px;
+  font-weight: 750;
+}}
+.subtitle {{
+  padding: 0 22px 14px;
+  border-bottom: 1px solid #e5eaf1;
+  color: #64748b;
+  font-size: 14px;
+}}
+table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+thead {{ background: #f1f5f9; color: #475569; }}
+th {{ text-align: left; padding: 10px 12px; font-size: 12px; font-weight: 750; }}
+td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle; }}
+.idx {{ width: 42px; color: #64748b; font-family: ui-monospace, Menlo, Consolas, monospace; }}
+.stage {{ display: flex; align-items: baseline; gap: 8px; font-weight: 650; color: #0f172a; }}
+.code {{ font-family: ui-monospace, Menlo, Consolas, monospace; color: #1d4ed8; font-weight: 760; }}
+.episode {{ margin-top: 3px; color: #64748b; font-size: 12px; }}
+.num, .count {{ text-align: right; font-family: ui-monospace, Menlo, Consolas, monospace; }}
+.num {{ color: #0f172a; font-weight: 760; }}
+.challenge {{ color: #8a4b00; }}
+.empty {{ color: #94a3b8; background: #fbfcfe; }}
+.empty .stage, .empty .code, .empty .num {{ color: #94a3b8; }}
+.footer {{
+  border-top: 1px solid #e5eaf1;
+  background: #fbfcfe;
+  padding: 12px 22px 16px;
+  font-size: 14px;
+  color: #64748b;
+  line-height: 1.7;
+}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title">{esc(title)}</div>
+  <div class="subtitle">{esc(subtitle)}</div>
+  <table>
+    <thead>
+      <tr><th>#</th><th>关卡</th><th>普通最低</th><th>普通记录</th><th>突袭最低</th><th>突袭记录</th></tr>
+    </thead>
+    <tbody>{''.join(body)}</tbody>
+  </table>
+  <div class="footer">{note_html}</div>
+</div>
+</body>
+</html>"""
+
+    async def _render_brief_image(
+        self,
+        title: str,
+        subtitle: str,
+        rows: list[dict],
+        category: str,
+        total_count: int,
+    ) -> Path | None:
+        html_doc = self._brief_image_html(title, subtitle, rows, category, total_count)
+        png_path = self.image_dir / f"arkrec_brief_{int(time.time() * 1000)}.png"
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page(viewport={"width": 908, "height": 900})
+                await page.set_content(html_doc, wait_until="networkidle")
+                card = await page.query_selector(".card")
+                if card:
+                    box = await card.bounding_box()
+                    if box:
+                        await page.set_viewport_size({
+                            "width": 908,
+                            "height": min(max(int(box["height"]) + 48, 360), 3400),
+                        })
+                await page.screenshot(path=str(png_path), full_page=True)
+                await browser.close()
+            return png_path
+        except Exception as e:
+            logger.error(f"ArkRec render brief image failed: {e}")
+            return None
+
+    async def _reply_brief_image(
+        self,
+        event: GroupMessageEvent,
+        title: str,
+        subtitle: str,
+        rows: list[dict],
+        category: str,
+        total_count: int,
+    ):
+        image_path = await self._render_brief_image(
+            title, subtitle, rows, category, total_count
+        )
+        if image_path:
+            try:
+                await event.reply(f"[CQ:image,file={image_path.resolve().as_posix()}]")
+                return
+            except Exception as e:
+                logger.error(f"ArkRec send brief image failed: {e}")
+            finally:
+                try:
+                    image_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        await event.reply(f"{title}\n{subtitle}\n图片生成或发送失败")
+
     # ====== 命令 ======
 
     @command_registry.command("arkrec_config", description="[root] 配置账号（私聊）")
@@ -1394,6 +1710,71 @@ body {{
             f"筛选: {category_label} / {mode_label} / {closed_label}",
             rows,
             "rank",
+            total_count=total,
+        )
+
+    @command_registry.command("arkrec_brief", description="关卡一览: 默认当前活动常规队，显示无纪录关卡")
+    @param(name="p1", default="", help="流派 / 数量 / 刷新")
+    @param(name="p2", default="", help="可选")
+    @param(name="p3", default="", help="可选")
+    @param(name="p4", default="", help="可选")
+    async def cmd_brief(self, event: GroupMessageEvent, p1: str = "",
+                        p2: str = "", p3: str = "", p4: str = ""):
+        logger.info(f"arkrec brief: p1={p1!r} p2={p2!r} p3={p3!r} p4={p4!r}")
+        parts = [p.strip() for p in [p1, p2, p3, p4] if p.strip()]
+        category = "常规队"
+        limit = BRIEF_IMAGE_MAX_ROWS
+        force = False
+        show_all = True
+        empty_only = False
+        scope = "current"
+
+        for kw in parts:
+            if kw in ("刷新", "refresh"):
+                force = True
+            elif kw.isdigit():
+                limit = max(1, min(int(kw), 120))
+            elif kw in ("仅无记录", "仅无纪录", "无记录", "无纪录", "empty"):
+                empty_only = True
+                show_all = True
+            elif kw in ("有记录", "有纪录", "hide_empty"):
+                show_all = False
+                empty_only = False
+            elif kw in ("全部关卡", "全部", "all"):
+                scope = "all"
+            elif resolved_category := self._resolve_category(kw):
+                category = resolved_category
+
+        try:
+            operation_info = await self._get_operation_info(force=force)
+            bundle_ext = await self._get_bundle_ext(force=force)
+            operations = await self._get_operation_rows_from_menu(force=force)
+        except Exception as e:
+            logger.error(f"ArkRec fetch brief failed: {e}")
+            await event.reply(f"关卡一览获取失败: {e}")
+            return
+
+        rows, total, current_name = self._brief_rows(
+            operation_info,
+            operations,
+            bundle_ext,
+            category,
+            scope,
+            show_all,
+            empty_only,
+            limit,
+        )
+        if not rows:
+            await event.reply(f"{category} / {current_name} 下没有符合条件的关卡")
+            return
+        scope_label = "全部关卡" if scope == "all" else f"当前活动: {current_name}"
+        empty_label = "仅无纪录关卡" if empty_only else ("含无纪录关卡" if show_all else "仅有纪录关卡")
+        await self._reply_brief_image(
+            event,
+            "关卡一览",
+            f"筛选: {scope_label} / {category} / {empty_label}",
+            rows,
+            category,
             total_count=total,
         )
 

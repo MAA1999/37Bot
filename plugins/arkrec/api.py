@@ -93,6 +93,14 @@ async def fetch_exclusive_operators(client: httpx.AsyncClient) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+async def fetch_open_episodes(client: httpx.AsyncClient) -> list[str]:
+    """获取当前开放活动章节。"""
+    resp = await client.get(f"{WIKI_BASE}/user/open-episodes")
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, list) else []
+
+
 async def full_sync(db, client: httpx.AsyncClient, sem: asyncio.Semaphore):
     """全量同步：拉 menu → 每关拉 records → 入库。
     已存在 _id 的记录更新字段，新记录插入。

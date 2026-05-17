@@ -18,7 +18,7 @@ from ncatbot.utils import get_log
 from .auth import ArkRecAuth
 from .db import ArkRecDB
 from .config import GroupSubscription
-from .api import fetch_exclusive_operators, full_sync, incremental_sync
+from .api import fetch_exclusive_operators, fetch_open_episodes, full_sync, incremental_sync
 
 logger = get_log("ArkRec")
 
@@ -28,6 +28,7 @@ LINK_CACHE_LIMIT = 200
 RECORD_IMAGE_MIN_ROWS = 2
 EXCLUSIVE_CACHE_TTL = 6 * 3600
 EXCLUSIVE_IMAGE_MAX_ROWS = 24
+EXCLUSIVE_ALWAYS_OPEN_STORIES = {"主线关卡", "剿灭作战", "物资筹备", "芯片搜索"}
 
 CATEGORY_ALIASES = {
     "wzw": "毋作吾",
@@ -88,7 +89,9 @@ class ArkRecPlugin(NcatBotPlugin):
         self._pushed_state, self._pending_ids = self._load_push_state()
         self._link_cache: dict[str, dict] = {}
         self._exclusive_cache: dict = {"created_at": 0.0, "data": []}
+        self._open_episodes_cache: dict = {"created_at": 0.0, "data": []}
         self._exclusive_lock = asyncio.Lock()
+        self._open_episodes_lock = asyncio.Lock()
 
         self.add_scheduled_task(
             self._sync_once,
@@ -182,6 +185,25 @@ class ArkRecPlugin(NcatBotPlugin):
             self._exclusive_cache = {"created_at": time.time(), "data": data}
             logger.info(f"ArkRec exclusive cache refreshed: {len(data)} operators")
             return data
+
+    async def _get_open_episodes(self, force: bool = False) -> set[str]:
+        now = time.time()
+        cached = self._open_episodes_cache.get("data") or []
+        created_at = float(self._open_episodes_cache.get("created_at") or 0)
+        if cached and not force and now - created_at < EXCLUSIVE_CACHE_TTL:
+            return set(str(item) for item in cached)
+
+        async with self._open_episodes_lock:
+            now = time.time()
+            cached = self._open_episodes_cache.get("data") or []
+            created_at = float(self._open_episodes_cache.get("created_at") or 0)
+            if cached and not force and now - created_at < EXCLUSIVE_CACHE_TTL:
+                return set(str(item) for item in cached)
+            async with self._create_tourist_client() as client:
+                data = await fetch_open_episodes(client)
+            self._open_episodes_cache = {"created_at": time.time(), "data": data}
+            logger.info(f"ArkRec open episodes cache refreshed: {len(data)} episodes")
+            return set(str(item) for item in data)
 
     def _get_sub(self, group_id: str) -> GroupSubscription:
         if group_id not in self.subs:
@@ -821,17 +843,28 @@ body {{
             return True
         return keyword.lower() in name.lower()
 
+    @staticmethod
+    def _exclusive_is_open_operation(operation: dict, open_episodes: set[str]) -> bool:
+        story = operation.get("story", "")
+        episode = operation.get("episode", "")
+        return story in EXCLUSIVE_ALWAYS_OPEN_STORIES or episode in open_episodes
+
     def _filter_exclusive_ops(
         self,
         operations: list[dict],
         category: str = "",
         mode: str = "",
+        open_episodes: set[str] | None = None,
+        include_closed: bool = False,
     ) -> list[dict]:
+        open_episodes = open_episodes or set()
         result = []
         for op in operations:
             if category and op.get("category") != category:
                 continue
             if mode and self._exclusive_mode_key(op) != mode:
+                continue
+            if not include_closed and not self._exclusive_is_open_operation(op, open_episodes):
                 continue
             result.append(op)
         result.sort(
@@ -852,6 +885,8 @@ body {{
         category: str = "",
         mode: str = "",
         limit: int = EXCLUSIVE_IMAGE_MAX_ROWS,
+        open_episodes: set[str] | None = None,
+        include_closed: bool = False,
     ) -> tuple[str, list[dict], int]:
         matches = [
             entry for entry in data
@@ -861,7 +896,9 @@ body {{
             return "", [], 0
         exact = [entry for entry in matches if entry.get("name") == operator]
         entry = (exact or matches)[0]
-        rows = self._filter_exclusive_ops(entry.get("operations", []), category, mode)
+        rows = self._filter_exclusive_ops(
+            entry.get("operations", []), category, mode, open_episodes, include_closed
+        )
         return entry.get("name", operator), rows[:limit], len(rows)
 
     def _exclusive_rank_rows(
@@ -870,10 +907,14 @@ body {{
         category: str = "",
         mode: str = "",
         limit: int = EXCLUSIVE_IMAGE_MAX_ROWS,
+        open_episodes: set[str] | None = None,
+        include_closed: bool = False,
     ) -> list[dict]:
         rows = []
         for entry in data:
-            ops = self._filter_exclusive_ops(entry.get("operations", []), category, mode)
+            ops = self._filter_exclusive_ops(
+                entry.get("operations", []), category, mode, open_episodes, include_closed
+            )
             if not ops:
                 continue
             normal = sum(1 for op in ops if self._exclusive_mode_key(op) == "normal")
@@ -1281,10 +1322,13 @@ body {{
         mode = ""
         limit = EXCLUSIVE_IMAGE_MAX_ROWS
         force = False
+        include_closed = False
 
         for kw in parts:
             if kw in ("刷新", "refresh"):
                 force = True
+            elif kw in ("已关闭", "关闭", "closed", "show_closed"):
+                include_closed = True
             elif kw in ("突袭", "challenge", "磨难", "险地", "磨难险地"):
                 mode = "challenge"
             elif kw in ("普通", "normal", "标准"):
@@ -1300,6 +1344,7 @@ body {{
 
         try:
             data = await self._get_exclusive_operators(force=force)
+            open_episodes = await self._get_open_episodes(force=force)
         except Exception as e:
             logger.error(f"ArkRec fetch exclusive failed: {e}")
             await event.reply(f"独享纪录获取失败: {e}")
@@ -1307,37 +1352,46 @@ body {{
 
         mode_label = self._exclusive_mode_label(mode) if mode else "普通+突袭"
         category_label = category or "全流派"
+        closed_label = "含已关闭活动" if include_closed else "不含已关闭活动"
         if operator:
             display_name, rows, total = self._exclusive_operator_rows(
-                data, operator, category, mode, limit
+                data,
+                operator,
+                category,
+                mode,
+                limit,
+                open_episodes,
+                include_closed,
             )
             if not display_name:
                 await event.reply(f'未找到干员 "{operator}" 的独享纪录')
                 return
             if not rows:
-                await event.reply(f"{display_name} 在 {category_label} / {mode_label} 下暂无独享纪录")
+                await event.reply(f"{display_name} 在 {category_label} / {mode_label} / {closed_label} 下暂无独享纪录")
                 return
             await self._reply_exclusive_image(
                 event,
                 f"{display_name} 独享纪录",
-                f"筛选: {category_label} / {mode_label}",
+                f"筛选: {category_label} / {mode_label} / {closed_label}",
                 rows,
                 "operator",
                 total_count=total,
             )
             return
 
-        rows = self._exclusive_rank_rows(data, category, mode, limit)
+        rows = self._exclusive_rank_rows(
+            data, category, mode, limit, open_episodes, include_closed
+        )
         if not rows:
-            await event.reply(f"{category_label} / {mode_label} 下暂无独享纪录")
+            await event.reply(f"{category_label} / {mode_label} / {closed_label} 下暂无独享纪录")
             return
         total = sum(1 for entry in data if self._filter_exclusive_ops(
-            entry.get("operations", []), category, mode
+            entry.get("operations", []), category, mode, open_episodes, include_closed
         ))
         await self._reply_exclusive_image(
             event,
             "独享纪录排行",
-            f"筛选: {category_label} / {mode_label}",
+            f"筛选: {category_label} / {mode_label} / {closed_label}",
             rows,
             "rank",
             total_count=total,

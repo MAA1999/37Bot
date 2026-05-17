@@ -1383,18 +1383,16 @@ body {{
         def esc(value) -> str:
             return html.escape(str(value or ""), quote=True)
 
-        def metric_html(metric: dict | None, challenge_mode: bool = False) -> str:
+        def metric_num(metric: dict | None) -> str:
             if not metric or not metric.get("count"):
                 return '<span class="dash">-</span>'
             num = metric.get("num")
-            count = metric.get("count", 0)
-            cls = "metric challenge" if challenge_mode else "metric"
-            return (
-                f'<div class="{cls}">'
-                f'<span class="people">{esc(num if num is not None else "-")}</span>'
-                f'<span class="records">{esc(count)} 条</span>'
-                "</div>"
-            )
+            return f'<span class="people">{esc(num if num is not None else "-")}</span>'
+
+        def metric_count(metric: dict | None) -> str:
+            if not metric or not metric.get("count"):
+                return '<span class="dash">-</span>'
+            return f'<span class="records">{esc(metric.get("count", 0))}</span>'
 
         body = []
         for i, row in enumerate(rows, 1):
@@ -1410,8 +1408,10 @@ body {{
     <div class="stage"><span class="code">{esc(row.get("operation", ""))}</span><span>{esc(row.get("cn_name", ""))}</span></div>
     <div class="episode">{esc(row.get("episode", ""))}</div>
   </td>
-  <td class="metric-cell">{metric_html(normal)}</td>
-  <td class="metric-cell">{metric_html(challenge, True)}</td>
+  <td class="metric-cell">{metric_num(normal)}</td>
+  <td class="metric-cell">{metric_count(normal)}</td>
+  <td class="metric-cell challenge-cell">{metric_num(challenge)}</td>
+  <td class="metric-cell">{metric_count(challenge)}</td>
 </tr>""")
 
         notes = []
@@ -1468,11 +1468,10 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
 .stage {{ display: flex; align-items: baseline; gap: 8px; font-weight: 650; color: #0f172a; }}
 .code {{ font-family: ui-monospace, Menlo, Consolas, monospace; color: #1d4ed8; font-weight: 760; }}
 .episode {{ margin-top: 3px; color: #64748b; font-size: 12px; }}
-.metric-cell {{ width: 118px; text-align: center; }}
-.metric {{ display: inline-flex; align-items: baseline; justify-content: center; gap: 6px; min-width: 74px; }}
+.metric-cell {{ width: 88px; text-align: center; }}
 .people {{ color: #0f172a; font-size: 18px; font-weight: 800; font-family: ui-monospace, Menlo, Consolas, monospace; }}
-.records {{ color: #64748b; font-size: 12px; }}
-.metric.challenge .people {{ color: #8a4b00; }}
+.records {{ color: #64748b; font-size: 14px; font-family: ui-monospace, Menlo, Consolas, monospace; }}
+.challenge-cell .people {{ color: #8a4b00; }}
 .dash {{ color: #94a3b8; font-family: ui-monospace, Menlo, Consolas, monospace; }}
 .empty {{ color: #94a3b8; background: #fbfcfe; }}
 .empty .stage, .empty .code, .empty .people {{ color: #94a3b8; }}
@@ -1492,7 +1491,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
   <div class="subtitle">{esc(subtitle)}</div>
   <table>
     <thead>
-      <tr><th>#</th><th class="stage-head">关卡</th><th>普通</th><th>突袭</th></tr>
+      <tr><th>#</th><th class="stage-head">关卡</th><th>普通人数</th><th>普通记录</th><th>突袭人数</th><th>突袭记录</th></tr>
     </thead>
     <tbody>{''.join(body)}</tbody>
   </table>

@@ -84,7 +84,12 @@ class GroupSummaryPlugin(NcatBotPlugin):
         self.groups: dict[str, SummaryGroupConfig] = self._load_config()
         self._name_cache: dict[str, str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        asyncio.create_task(self._auto_summary_loop())
+        self.add_scheduled_task(
+            self._auto_summary_tick,
+            "group_summary_auto",
+            "300s",
+        )
+        logger.info("GroupSummary scheduled auto task registered (300s)")
 
     # ====== 配置 ======
 
@@ -275,29 +280,26 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
     # ====== 定时任务 ======
 
-    async def _auto_summary_loop(self):
-        await asyncio.sleep(30)
-        while True:
-            await asyncio.sleep(300)
-            now = datetime.now()
-            today = now.strftime("%Y-%m-%d")
-            for group_id, cfg in self.groups.items():
-                if not cfg.enabled or not cfg.auto:
-                    continue
-                if cfg.last_summary_date == today:
-                    continue
-                if now.hour != cfg.auto_hour:
-                    continue
-                if now.minute >= 10:
-                    continue
-                if not is_llm_configured():
-                    continue
-                logger.info(f"定时总结: group={group_id}")
-                reply = await self._do_summary(group_id, cfg)
-                if reply:
-                    await self._send_summary(group_id, reply)
-                cfg.last_summary_date = today
-                self._save_config()
+    async def _auto_summary_tick(self):
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        for group_id, cfg in self.groups.items():
+            if not cfg.enabled or not cfg.auto:
+                continue
+            if cfg.last_summary_date == today:
+                continue
+            if now.hour != cfg.auto_hour:
+                continue
+            if now.minute >= 10:
+                continue
+            if not is_llm_configured():
+                continue
+            logger.info(f"定时总结: group={group_id}")
+            reply = await self._do_summary(group_id, cfg)
+            if reply:
+                await self._send_summary(group_id, reply)
+            cfg.last_summary_date = today
+            self._save_config()
 
     # ====== 命令 ======
 
@@ -342,6 +344,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
         cfg = self._get_cfg(str(event.group_id))
         cfg.enabled = True
         cfg.auto = True
+        cfg.last_summary_date = ""
         self._save_config()
         await event.reply(f"定时总结已开启 (每日 {cfg.auto_hour}:00)")
 

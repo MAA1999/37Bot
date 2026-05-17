@@ -1,6 +1,7 @@
 """arkrec 插件 —— 明日方舟少人wiki"""
 
 import asyncio
+from datetime import datetime, timezone
 import html
 import json
 import re
@@ -1265,39 +1266,78 @@ body {{
         return False
 
     @staticmethod
-    def _brief_current_operations(bundle_ext: dict, menu_tree: dict) -> tuple[list[dict], str]:
+    def _brief_format_date(value: str) -> str:
+        if not value:
+            return ""
+        match = re.search(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", str(value))
+        if match:
+            year, month, day = match.groups()
+            return f"{year}-{int(month):02d}-{int(day):02d}"
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value[:10]
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    @classmethod
+    def _brief_episode_date_range(cls, episode: dict) -> str:
+        start = cls._brief_format_date(episode.get("implDate", ""))
+        end = cls._brief_format_date(episode.get("endDate", ""))
+        if start and end:
+            return f"{start} - {end}"
+        if start:
+            zones = {
+                child.get("zone")
+                for child in episode.get("childNodes", [])
+                if isinstance(child, dict) and child.get("zone")
+            }
+            days = max(len(zones), 1) * 7
+            try:
+                dt = datetime.fromisoformat(episode.get("implDate", "").replace("Z", "+00:00"))
+                inferred = datetime.fromtimestamp(dt.timestamp() + days * 86400, timezone.utc)
+                return f"{start} - {inferred.strftime('%Y-%m-%d')}"
+            except ValueError:
+                return start
+        return ""
+
+    @classmethod
+    def _brief_current_operations(cls, bundle_ext: dict, menu_tree: dict) -> tuple[list[dict], str, str]:
         indexes = bundle_ext.get("currentEpisode") or []
         if not isinstance(indexes, list) or len(indexes) < 2:
-            return [], "当前活动"
+            return [], "当前活动", ""
         stories = menu_tree.get("childNodes", [])
         if not isinstance(stories, list):
-            return [], "当前活动"
+            return [], "当前活动", ""
 
         story_index = indexes[0]
         episode_indexes = [indexes[1]]
         if len(indexes) >= 6 and indexes[4] >= 0 and indexes[5] >= 0:
             episode_indexes.append(indexes[5])
         if story_index < 0 or story_index >= len(stories):
-            return [], "当前活动"
+            return [], "当前活动", ""
 
         story = stories[story_index]
         episodes = story.get("childNodes", [])
         if not isinstance(episodes, list):
-            return [], story.get("story", "当前活动") or "当前活动"
+            return [], story.get("story", "当前活动") or "当前活动", ""
 
         current_ops = []
         current_names = []
+        date_ranges = []
         for episode_index in episode_indexes:
             if 0 <= episode_index < len(episodes):
                 episode = episodes[episode_index]
                 episode_name = episode.get("episode", "")
                 if episode_name:
                     current_names.append(episode_name)
+                date_range = cls._brief_episode_date_range(episode)
+                if date_range:
+                    date_ranges.append(date_range)
                 child_nodes = episode.get("childNodes", [])
                 if isinstance(child_nodes, list):
                     current_ops.extend(child_nodes)
         label = "、".join(current_names) or story.get("story", "当前活动") or "当前活动"
-        return current_ops, label
+        return current_ops, label, "；".join(date_ranges)
 
     def _brief_rows(
         self,
@@ -1310,12 +1350,12 @@ body {{
         show_all: bool,
         empty_only: bool,
         limit: int,
-    ) -> tuple[list[dict], int, str]:
+    ) -> tuple[list[dict], int, str, str]:
         info_map = {
             (row.get("operation", ""), row.get("cn_name", "")): row
             for row in operation_info
         }
-        current_ops, current_name = self._brief_current_operations(bundle_ext, menu_tree)
+        current_ops, current_name, date_range = self._brief_current_operations(bundle_ext, menu_tree)
         source_ops = current_ops if scope == "current" else operations
         selected = []
         for op in source_ops:
@@ -1330,7 +1370,7 @@ body {{
             if empty_only and has_record:
                 continue
             selected.append(row)
-        return selected[:limit], len(selected), current_name
+        return selected[:limit], len(selected), current_name, date_range
 
     @staticmethod
     def _brief_image_html(
@@ -1343,13 +1383,24 @@ body {{
         def esc(value) -> str:
             return html.escape(str(value or ""), quote=True)
 
+        def metric_html(metric: dict | None, challenge_mode: bool = False) -> str:
+            if not metric or not metric.get("count"):
+                return '<span class="dash">-</span>'
+            num = metric.get("num")
+            count = metric.get("count", 0)
+            cls = "metric challenge" if challenge_mode else "metric"
+            return (
+                f'<div class="{cls}">'
+                f'<span class="people">{esc(num if num is not None else "-")}</span>'
+                f'<span class="records">{esc(count)} 条</span>'
+                "</div>"
+            )
+
         body = []
         for i, row in enumerate(rows, 1):
             normal = ArkRecPlugin._brief_metric(row, category, "normal")
             challenge = ArkRecPlugin._brief_metric(row, category, "challenge")
-            normal_num = normal.get("num") if normal else None
             normal_count = normal.get("count") if normal else 0
-            challenge_num = challenge.get("num") if challenge else None
             challenge_count = challenge.get("count") if challenge else 0
             empty = not normal_count and not challenge_count
             body.append(f"""
@@ -1359,10 +1410,8 @@ body {{
     <div class="stage"><span class="code">{esc(row.get("operation", ""))}</span><span>{esc(row.get("cn_name", ""))}</span></div>
     <div class="episode">{esc(row.get("episode", ""))}</div>
   </td>
-  <td class="num">{esc(normal_num if normal_num is not None and normal_count else "-")}</td>
-  <td class="count">{esc(normal_count or "-")}</td>
-  <td class="num challenge">{esc(challenge_num if challenge_num is not None and challenge_count else "-")}</td>
-  <td class="count">{esc(challenge_count or "-")}</td>
+  <td class="metric-cell">{metric_html(normal)}</td>
+  <td class="metric-cell">{metric_html(challenge, True)}</td>
 </tr>""")
 
         notes = []
@@ -1412,17 +1461,21 @@ body {{
 }}
 table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
 thead {{ background: #f1f5f9; color: #475569; }}
-th {{ text-align: left; padding: 10px 12px; font-size: 12px; font-weight: 750; }}
+th {{ text-align: center; padding: 10px 12px; font-size: 12px; font-weight: 750; }}
+th.stage-head {{ text-align: left; }}
 td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle; }}
-.idx {{ width: 42px; color: #64748b; font-family: ui-monospace, Menlo, Consolas, monospace; }}
+.idx {{ width: 42px; color: #64748b; text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace; }}
 .stage {{ display: flex; align-items: baseline; gap: 8px; font-weight: 650; color: #0f172a; }}
 .code {{ font-family: ui-monospace, Menlo, Consolas, monospace; color: #1d4ed8; font-weight: 760; }}
 .episode {{ margin-top: 3px; color: #64748b; font-size: 12px; }}
-.num, .count {{ text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace; }}
-.num {{ color: #0f172a; font-weight: 760; }}
-.challenge {{ color: #8a4b00; }}
+.metric-cell {{ width: 118px; text-align: center; }}
+.metric {{ display: inline-flex; align-items: baseline; justify-content: center; gap: 6px; min-width: 74px; }}
+.people {{ color: #0f172a; font-size: 18px; font-weight: 800; font-family: ui-monospace, Menlo, Consolas, monospace; }}
+.records {{ color: #64748b; font-size: 12px; }}
+.metric.challenge .people {{ color: #8a4b00; }}
+.dash {{ color: #94a3b8; font-family: ui-monospace, Menlo, Consolas, monospace; }}
 .empty {{ color: #94a3b8; background: #fbfcfe; }}
-.empty .stage, .empty .code, .empty .num {{ color: #94a3b8; }}
+.empty .stage, .empty .code, .empty .people {{ color: #94a3b8; }}
 .footer {{
   border-top: 1px solid #e5eaf1;
   background: #fbfcfe;
@@ -1439,7 +1492,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
   <div class="subtitle">{esc(subtitle)}</div>
   <table>
     <thead>
-      <tr><th>#</th><th>关卡</th><th>普通最低</th><th>普通记录</th><th>突袭最低</th><th>突袭记录</th></tr>
+      <tr><th>#</th><th class="stage-head">关卡</th><th>普通</th><th>突袭</th></tr>
     </thead>
     <tbody>{''.join(body)}</tbody>
   </table>
@@ -1792,7 +1845,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
             await event.reply(f"关卡一览获取失败: {e}")
             return
 
-        rows, total, current_name = self._brief_rows(
+        rows, total, current_name, date_range = self._brief_rows(
             operation_info,
             operations,
             bundle_ext,
@@ -1807,6 +1860,8 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
             await event.reply(f"{category} / {current_name} 下没有符合条件的关卡")
             return
         scope_label = "全部关卡" if scope == "all" else f"当前活动: {current_name}"
+        if scope == "current" and date_range:
+            scope_label = f"{scope_label} ({date_range})"
         empty_label = "仅无纪录关卡" if empty_only else ("含无纪录关卡" if show_all else "仅有纪录关卡")
         await self._reply_brief_image(
             event,

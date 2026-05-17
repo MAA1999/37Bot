@@ -18,7 +18,7 @@ from ncatbot.utils import get_log
 from .auth import ArkRecAuth
 from .db import ArkRecDB
 from .config import GroupSubscription
-from .api import full_sync, incremental_sync
+from .api import fetch_exclusive_operators, full_sync, incremental_sync
 
 logger = get_log("ArkRec")
 
@@ -26,6 +26,8 @@ SYNC_INTERVAL = 120  # 增量同步间隔（秒）
 LINK_CACHE_TTL = 3600
 LINK_CACHE_LIMIT = 200
 RECORD_IMAGE_MIN_ROWS = 2
+EXCLUSIVE_CACHE_TTL = 6 * 3600
+EXCLUSIVE_IMAGE_MAX_ROWS = 24
 
 CATEGORY_ALIASES = {
     "wzw": "毋作吾",
@@ -85,6 +87,8 @@ class ArkRecPlugin(NcatBotPlugin):
         self._pending_ids: dict[str, list[str]]
         self._pushed_state, self._pending_ids = self._load_push_state()
         self._link_cache: dict[str, dict] = {}
+        self._exclusive_cache: dict = {"created_at": 0.0, "data": []}
+        self._exclusive_lock = asyncio.Lock()
 
         self.add_scheduled_task(
             self._sync_once,
@@ -159,6 +163,25 @@ class ArkRecPlugin(NcatBotPlugin):
             headers={"User-Agent": CHROME_UA},
             timeout=30,
         )
+
+    async def _get_exclusive_operators(self, force: bool = False) -> list[dict]:
+        now = time.time()
+        cached = self._exclusive_cache.get("data") or []
+        created_at = float(self._exclusive_cache.get("created_at") or 0)
+        if cached and not force and now - created_at < EXCLUSIVE_CACHE_TTL:
+            return cached
+
+        async with self._exclusive_lock:
+            now = time.time()
+            cached = self._exclusive_cache.get("data") or []
+            created_at = float(self._exclusive_cache.get("created_at") or 0)
+            if cached and not force and now - created_at < EXCLUSIVE_CACHE_TTL:
+                return cached
+            async with self._create_tourist_client() as client:
+                data = await fetch_exclusive_operators(client)
+            self._exclusive_cache = {"created_at": time.time(), "data": data}
+            logger.info(f"ArkRec exclusive cache refreshed: {len(data)} operators")
+            return data
 
     def _get_sub(self, group_id: str) -> GroupSubscription:
         if group_id not in self.subs:
@@ -782,6 +805,310 @@ body {{
                                    if r["_id"] in best_ids.get((r["operation"], cat, difficulty), set())}
         return records
 
+    # ====== 独享纪录 ======
+
+    @staticmethod
+    def _exclusive_mode_key(operation: dict) -> str:
+        return "challenge" if operation.get("operationType") == " 突袭" else "normal"
+
+    @staticmethod
+    def _exclusive_mode_label(mode: str) -> str:
+        return "突袭" if mode == "challenge" else "普通"
+
+    @staticmethod
+    def _exclusive_match_operator(name: str, keyword: str) -> bool:
+        if not keyword:
+            return True
+        return keyword.lower() in name.lower()
+
+    def _filter_exclusive_ops(
+        self,
+        operations: list[dict],
+        category: str = "",
+        mode: str = "",
+    ) -> list[dict]:
+        result = []
+        for op in operations:
+            if category and op.get("category") != category:
+                continue
+            if mode and self._exclusive_mode_key(op) != mode:
+                continue
+            result.append(op)
+        result.sort(
+            key=lambda op: (
+                op.get("story", ""),
+                op.get("episode", ""),
+                op.get("operation", ""),
+                op.get("operationType", ""),
+                op.get("category", ""),
+            )
+        )
+        return result
+
+    def _exclusive_operator_rows(
+        self,
+        data: list[dict],
+        operator: str,
+        category: str = "",
+        mode: str = "",
+        limit: int = EXCLUSIVE_IMAGE_MAX_ROWS,
+    ) -> tuple[str, list[dict], int]:
+        matches = [
+            entry for entry in data
+            if self._exclusive_match_operator(entry.get("name", ""), operator)
+        ]
+        if not matches:
+            return "", [], 0
+        exact = [entry for entry in matches if entry.get("name") == operator]
+        entry = (exact or matches)[0]
+        rows = self._filter_exclusive_ops(entry.get("operations", []), category, mode)
+        return entry.get("name", operator), rows[:limit], len(rows)
+
+    def _exclusive_rank_rows(
+        self,
+        data: list[dict],
+        category: str = "",
+        mode: str = "",
+        limit: int = EXCLUSIVE_IMAGE_MAX_ROWS,
+    ) -> list[dict]:
+        rows = []
+        for entry in data:
+            ops = self._filter_exclusive_ops(entry.get("operations", []), category, mode)
+            if not ops:
+                continue
+            normal = sum(1 for op in ops if self._exclusive_mode_key(op) == "normal")
+            challenge = len(ops) - normal
+            rows.append({
+                "name": entry.get("name", ""),
+                "count": len(ops),
+                "normal": normal,
+                "challenge": challenge,
+                "sample": ops[:3],
+            })
+        rows.sort(key=lambda row: (-row["count"], row["name"]))
+        return rows[:limit]
+
+    @staticmethod
+    def _exclusive_image_html(
+        title: str,
+        subtitle: str,
+        rows: list[dict],
+        view: str,
+        total_count: int = 0,
+    ) -> str:
+        def esc(value) -> str:
+            return html.escape(str(value or ""), quote=True)
+
+        body = []
+        if view == "operator":
+            for i, op in enumerate(rows, 1):
+                mode = ArkRecPlugin._exclusive_mode_label(
+                    ArkRecPlugin._exclusive_mode_key(op)
+                )
+                body.append(f"""
+<section class="row op-row">
+  <div class="idx">{i}</div>
+  <div class="main">
+    <div class="head">
+      <span class="stage">{esc(op.get("operation", ""))}</span>
+      <span class="stage-name">{esc(op.get("cn_name", ""))}</span>
+      <span class="badge {esc(ArkRecPlugin._exclusive_mode_key(op))}">{esc(mode)}</span>
+      <span class="chip">{esc(op.get("category", ""))}</span>
+    </div>
+    <div class="meta">{esc(op.get("story", ""))} / {esc(op.get("episode", ""))}</div>
+  </div>
+</section>""")
+        else:
+            for i, row in enumerate(rows, 1):
+                samples = "、".join(
+                    f'{op.get("operation", "")} {op.get("cn_name", "")}'
+                    for op in row.get("sample", [])
+                )
+                body.append(f"""
+<section class="row rank-row">
+  <div class="idx">{i}</div>
+  <div class="main">
+    <div class="head">
+      <span class="operator">{esc(row.get("name", ""))}</span>
+      <span class="count">{esc(row.get("count", 0))} 条</span>
+      <span class="badge normal">普通 {esc(row.get("normal", 0))}</span>
+      <span class="badge challenge">突袭 {esc(row.get("challenge", 0))}</span>
+    </div>
+    <div class="meta">{esc(samples)}</div>
+  </div>
+</section>""")
+
+        notes = []
+        if total_count > len(rows):
+            notes.append(f"共 {total_count} 条，仅显示前 {len(rows)} 条")
+        notes.append("数据来源: wiki.arkrec.com/exclusive-records")
+        note_html = "".join(f"<div>{esc(note)}</div>" for note in notes)
+
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(21, 128, 61, .11), rgba(37, 99, 235, .09) 45%, rgba(245, 158, 11, .08)),
+    linear-gradient(rgba(255,255,255,.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.55) 1px, transparent 1px),
+    #eef3f7;
+  background-size: auto, 18px 18px, 18px 18px, auto;
+  color: #172033;
+  font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+}}
+.card {{
+  width: 820px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, .97);
+  border: 1px solid rgba(210, 220, 230, .95);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 18px 46px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .06);
+}}
+.title {{
+  padding: 18px 22px 8px;
+  background: linear-gradient(90deg, rgba(21, 128, 61, .10), rgba(37, 99, 235, .08)), #f8fafc;
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: 0;
+}}
+.subtitle {{
+  padding: 0 22px 14px;
+  border-bottom: 1px solid #e5eaf1;
+  color: #64748b;
+  font-size: 14px;
+}}
+.rows {{ padding: 10px 14px 6px; }}
+.row {{
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 12px;
+  padding: 11px 8px;
+  border-bottom: 1px solid #edf0f5;
+}}
+.row:last-child {{ border-bottom: 0; }}
+.idx {{
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: #15803d;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 30px;
+  text-align: center;
+}}
+.head {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 30px; }}
+.stage, .operator {{ font-size: 18px; font-weight: 760; color: #0f172a; }}
+.stage-name {{ font-size: 17px; font-weight: 650; color: #1f2937; }}
+.count {{
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #bbf7d0;
+  font-size: 13px;
+  font-weight: 700;
+}}
+.badge, .chip {{
+  display: inline-block;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+}}
+.badge.normal {{ background: #eef6ff; color: #175da8; border: 1px solid #cfe4fb; }}
+.badge.challenge {{ background: #fff1d6; color: #8a4b00; border: 1px solid #ffd58a; }}
+.chip {{ background: #f1f5f9; color: #475569; border: 1px solid #d8e0ea; }}
+.meta {{
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+}}
+.footer {{
+  border-top: 1px solid #e5eaf1;
+  background: #fbfcfe;
+  padding: 12px 22px 16px;
+  font-size: 14px;
+  color: #64748b;
+  line-height: 1.7;
+}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title">{esc(title)}</div>
+  <div class="subtitle">{esc(subtitle)}</div>
+  <div class="rows">{''.join(body)}</div>
+  <div class="footer">{note_html}</div>
+</div>
+</body>
+</html>"""
+
+    async def _render_exclusive_image(
+        self,
+        title: str,
+        subtitle: str,
+        rows: list[dict],
+        view: str,
+        total_count: int = 0,
+    ) -> Path | None:
+        html_doc = self._exclusive_image_html(title, subtitle, rows, view, total_count)
+        png_path = self.image_dir / f"arkrec_exclusive_{int(time.time() * 1000)}.png"
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page(viewport={"width": 868, "height": 900})
+                await page.set_content(html_doc, wait_until="networkidle")
+                card = await page.query_selector(".card")
+                if card:
+                    box = await card.bounding_box()
+                    if box:
+                        await page.set_viewport_size({
+                            "width": 868,
+                            "height": min(max(int(box["height"]) + 48, 360), 3200),
+                        })
+                await page.screenshot(path=str(png_path), full_page=True)
+                await browser.close()
+            return png_path
+        except Exception as e:
+            logger.error(f"ArkRec render exclusive image failed: {e}")
+            return None
+
+    async def _reply_exclusive_image(
+        self,
+        event: GroupMessageEvent,
+        title: str,
+        subtitle: str,
+        rows: list[dict],
+        view: str,
+        total_count: int = 0,
+    ):
+        image_path = await self._render_exclusive_image(
+            title, subtitle, rows, view, total_count
+        )
+        if image_path:
+            try:
+                await event.reply(f"[CQ:image,file={image_path.resolve().as_posix()}]")
+                return
+            except Exception as e:
+                logger.error(f"ArkRec send exclusive image failed: {e}")
+            finally:
+                try:
+                    image_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        await event.reply(f"{title}\n{subtitle}\n图片生成或发送失败")
+
     # ====== 命令 ======
 
     @command_registry.command("arkrec_config", description="[root] 配置账号（私聊）")
@@ -937,6 +1264,84 @@ body {{
             )
         lines.append("\n回复本条消息序号可查看链接")
         await self._reply_records(event, "\n".join(lines), display_records)
+
+    @command_registry.command("arkrec_exclusive", description="查询独享纪录: [干员] [流派] [普通/突袭] [数量]")
+    @param(name="p1", default="", help="干员名 / 流派 / 数量")
+    @param(name="p2", default="", help="可选")
+    @param(name="p3", default="", help="可选")
+    @param(name="p4", default="", help="可选")
+    async def cmd_exclusive(self, event: GroupMessageEvent, p1: str = "",
+                            p2: str = "", p3: str = "", p4: str = ""):
+        logger.info(
+            f"arkrec exclusive: p1={p1!r} p2={p2!r} p3={p3!r} p4={p4!r}"
+        )
+        parts = [p.strip() for p in [p1, p2, p3, p4] if p.strip()]
+        operator = ""
+        category = "常规队"
+        mode = ""
+        limit = EXCLUSIVE_IMAGE_MAX_ROWS
+        force = False
+
+        for kw in parts:
+            if kw in ("刷新", "refresh"):
+                force = True
+            elif kw in ("突袭", "challenge", "磨难", "险地", "磨难险地"):
+                mode = "challenge"
+            elif kw in ("普通", "normal", "标准"):
+                mode = "normal"
+            elif kw.isdigit():
+                limit = max(1, min(int(kw), 50))
+            elif resolved_category := self._resolve_category(kw):
+                category = resolved_category
+            elif kw in ("全部", "全流派", "所有流派", "all"):
+                category = ""
+            elif not operator:
+                operator = kw
+
+        try:
+            data = await self._get_exclusive_operators(force=force)
+        except Exception as e:
+            logger.error(f"ArkRec fetch exclusive failed: {e}")
+            await event.reply(f"独享纪录获取失败: {e}")
+            return
+
+        mode_label = self._exclusive_mode_label(mode) if mode else "普通+突袭"
+        category_label = category or "全流派"
+        if operator:
+            display_name, rows, total = self._exclusive_operator_rows(
+                data, operator, category, mode, limit
+            )
+            if not display_name:
+                await event.reply(f'未找到干员 "{operator}" 的独享纪录')
+                return
+            if not rows:
+                await event.reply(f"{display_name} 在 {category_label} / {mode_label} 下暂无独享纪录")
+                return
+            await self._reply_exclusive_image(
+                event,
+                f"{display_name} 独享纪录",
+                f"筛选: {category_label} / {mode_label}",
+                rows,
+                "operator",
+                total_count=total,
+            )
+            return
+
+        rows = self._exclusive_rank_rows(data, category, mode, limit)
+        if not rows:
+            await event.reply(f"{category_label} / {mode_label} 下暂无独享纪录")
+            return
+        total = sum(1 for entry in data if self._filter_exclusive_ops(
+            entry.get("operations", []), category, mode
+        ))
+        await self._reply_exclusive_image(
+            event,
+            "独享纪录排行",
+            f"筛选: {category_label} / {mode_label}",
+            rows,
+            "rank",
+            total_count=total,
+        )
 
     @command_registry.command("arkrec_op", description="查关卡信息")
     @param(name="operation", default="", help="关卡号 如 1-7")

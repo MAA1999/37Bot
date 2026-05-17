@@ -85,6 +85,14 @@ async def fetch_categories(client: httpx.AsyncClient) -> dict:
     return resp.json()
 
 
+async def fetch_exclusive_operators(client: httpx.AsyncClient) -> list[dict]:
+    """获取独享纪录，按干员聚合。"""
+    resp = await client.get(f"{WIKI_BASE}/api/exclusive-operators")
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, list) else []
+
+
 async def full_sync(db, client: httpx.AsyncClient, sem: asyncio.Semaphore):
     """全量同步：拉 menu → 每关拉 records → 入库。
     已存在 _id 的记录更新字段，新记录插入。

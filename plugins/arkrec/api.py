@@ -22,9 +22,7 @@ RECORD_HEADERS = {
 
 async def fetch_menu(client: httpx.AsyncClient) -> list[dict]:
     """获取全关卡树，摊平返回所有关卡节点"""
-    resp = await client.get(f"{WIKI_BASE}/api/menu")
-    resp.raise_for_status()
-    menu = resp.json()
+    menu = await fetch_menu_tree(client)
 
     ops = []
 
@@ -37,6 +35,14 @@ async def fetch_menu(client: httpx.AsyncClient) -> list[dict]:
     walk(menu)
     logger.info(f"menu: {len(ops)} 个关卡")
     return ops
+
+
+async def fetch_menu_tree(client: httpx.AsyncClient) -> dict:
+    """获取原始关卡树。"""
+    resp = await client.get(f"{WIKI_BASE}/api/menu")
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, dict) else {}
 
 
 async def fetch_records_for_operation(

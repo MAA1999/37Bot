@@ -21,6 +21,7 @@ from .config import GroupSubscription
 from .api import (
     fetch_bundle_ext,
     fetch_exclusive_operators,
+    fetch_menu_tree,
     fetch_open_episodes,
     fetch_operation_info,
     full_sync,
@@ -52,6 +53,14 @@ CATEGORY_ALIASES = {
     "自忍": "自闭忍宗",
     "孤忍": "孤岛忍宗",
     "深海": "深海猎人队",
+    "先锋": "先锋队",
+    "近卫": "近卫队",
+    "重装": "重装队",
+    "狙击": "狙击队",
+    "术师": "术师队",
+    "医疗": "医疗队",
+    "辅助": "辅助队",
+    "特种": "特种队",
 }
 
 CATEGORY_SUFFIXES = ("队", "级", "流", "组")
@@ -101,10 +110,12 @@ class ArkRecPlugin(NcatBotPlugin):
         self._open_episodes_cache: dict = {"created_at": 0.0, "data": []}
         self._operation_info_cache: dict = {"created_at": 0.0, "data": []}
         self._bundle_ext_cache: dict = {"created_at": 0.0, "data": {}}
+        self._menu_tree_cache: dict = {"created_at": 0.0, "data": {}}
         self._exclusive_lock = asyncio.Lock()
         self._open_episodes_lock = asyncio.Lock()
         self._operation_info_lock = asyncio.Lock()
         self._bundle_ext_lock = asyncio.Lock()
+        self._menu_tree_lock = asyncio.Lock()
 
         self.add_scheduled_task(
             self._sync_once,
@@ -254,6 +265,25 @@ class ArkRecPlugin(NcatBotPlugin):
                 data = await fetch_bundle_ext(client)
             self._bundle_ext_cache = {"created_at": time.time(), "data": data}
             logger.info("ArkRec bundle-ext cache refreshed")
+            return data
+
+    async def _get_menu_tree(self, force: bool = False) -> dict:
+        now = time.time()
+        cached = self._menu_tree_cache.get("data") or {}
+        created_at = float(self._menu_tree_cache.get("created_at") or 0)
+        if cached and not force and now - created_at < BRIEF_CACHE_TTL:
+            return cached
+
+        async with self._menu_tree_lock:
+            now = time.time()
+            cached = self._menu_tree_cache.get("data") or {}
+            created_at = float(self._menu_tree_cache.get("created_at") or 0)
+            if cached and not force and now - created_at < BRIEF_CACHE_TTL:
+                return cached
+            async with self._create_tourist_client() as client:
+                data = await fetch_menu_tree(client)
+            self._menu_tree_cache = {"created_at": time.time(), "data": data}
+            logger.info("ArkRec menu tree cache refreshed")
             return data
 
     async def _get_operation_rows_from_menu(self, force: bool = False) -> list[dict]:
@@ -831,6 +861,8 @@ body {{
     def _resolve_category(self, kw: str) -> str:
         """分类名允许别名和省略常见后缀，如 特种 -> 特种队。"""
         alias = CATEGORY_ALIASES.get(kw) or CATEGORY_ALIASES.get(kw.lower())
+        if alias:
+            return alias
         base = alias or kw
         candidates = [base]
         for suffix in CATEGORY_SUFFIXES:
@@ -1233,40 +1265,46 @@ body {{
         return False
 
     @staticmethod
-    def _brief_current_episode_names(bundle_ext: dict, operations: list[dict]) -> set[str]:
+    def _brief_current_operations(bundle_ext: dict, menu_tree: dict) -> tuple[list[dict], str]:
         indexes = bundle_ext.get("currentEpisode") or []
         if not isinstance(indexes, list) or len(indexes) < 2:
-            return set()
+            return [], "当前活动"
+        stories = menu_tree.get("childNodes", [])
+        if not isinstance(stories, list):
+            return [], "当前活动"
+
         story_index = indexes[0]
         episode_indexes = [indexes[1]]
         if len(indexes) >= 6 and indexes[4] >= 0 and indexes[5] >= 0:
             episode_indexes.append(indexes[5])
-
-        stories = []
-        for op in operations:
-            story = op.get("story", "")
-            episode = op.get("episode", "")
-            if story and episode and story not in [item[0] for item in stories]:
-                stories.append((story, []))
-            if story and episode:
-                for item_story, episodes in stories:
-                    if item_story == story and episode not in episodes:
-                        episodes.append(episode)
-                        break
         if story_index < 0 or story_index >= len(stories):
-            return set()
-        current = set()
-        episodes = stories[story_index][1]
+            return [], "当前活动"
+
+        story = stories[story_index]
+        episodes = story.get("childNodes", [])
+        if not isinstance(episodes, list):
+            return [], story.get("story", "当前活动") or "当前活动"
+
+        current_ops = []
+        current_names = []
         for episode_index in episode_indexes:
             if 0 <= episode_index < len(episodes):
-                current.add(episodes[episode_index])
-        return current
+                episode = episodes[episode_index]
+                episode_name = episode.get("episode", "")
+                if episode_name:
+                    current_names.append(episode_name)
+                child_nodes = episode.get("childNodes", [])
+                if isinstance(child_nodes, list):
+                    current_ops.extend(child_nodes)
+        label = "、".join(current_names) or story.get("story", "当前活动") or "当前活动"
+        return current_ops, label
 
     def _brief_rows(
         self,
         operation_info: list[dict],
         operations: list[dict],
         bundle_ext: dict,
+        menu_tree: dict,
         category: str,
         scope: str,
         show_all: bool,
@@ -1277,11 +1315,10 @@ body {{
             (row.get("operation", ""), row.get("cn_name", "")): row
             for row in operation_info
         }
-        current_episodes = self._brief_current_episode_names(bundle_ext, operations)
+        current_ops, current_name = self._brief_current_operations(bundle_ext, menu_tree)
+        source_ops = current_ops if scope == "current" else operations
         selected = []
-        for op in operations:
-            if scope == "current" and op.get("episode") not in current_episodes:
-                continue
+        for op in source_ops:
             row = dict(info_map.get((op.get("operation", ""), op.get("cn_name", "")), {}))
             row.setdefault("story", op.get("story", ""))
             row.setdefault("episode", op.get("episode", ""))
@@ -1293,7 +1330,7 @@ body {{
             if empty_only and has_record:
                 continue
             selected.append(row)
-        return selected[:limit], len(selected), "、".join(sorted(current_episodes)) or "当前活动"
+        return selected[:limit], len(selected), current_name
 
     @staticmethod
     def _brief_image_html(
@@ -1381,7 +1418,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
 .stage {{ display: flex; align-items: baseline; gap: 8px; font-weight: 650; color: #0f172a; }}
 .code {{ font-family: ui-monospace, Menlo, Consolas, monospace; color: #1d4ed8; font-weight: 760; }}
 .episode {{ margin-top: 3px; color: #64748b; font-size: 12px; }}
-.num, .count {{ text-align: right; font-family: ui-monospace, Menlo, Consolas, monospace; }}
+.num, .count {{ text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace; }}
 .num {{ color: #0f172a; font-weight: 760; }}
 .challenge {{ color: #8a4b00; }}
 .empty {{ color: #94a3b8; background: #fbfcfe; }}
@@ -1748,6 +1785,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
         try:
             operation_info = await self._get_operation_info(force=force)
             bundle_ext = await self._get_bundle_ext(force=force)
+            menu_tree = await self._get_menu_tree(force=force)
             operations = await self._get_operation_rows_from_menu(force=force)
         except Exception as e:
             logger.error(f"ArkRec fetch brief failed: {e}")
@@ -1758,6 +1796,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
             operation_info,
             operations,
             bundle_ext,
+            menu_tree,
             category,
             scope,
             show_all,

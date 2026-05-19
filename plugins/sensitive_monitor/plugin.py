@@ -119,7 +119,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             logger.info(
                 f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}"
             )
-            await self._notify(cfg, group_id, str(event.user_id), text, reason)
+            await self._notify(cfg, group_id, str(event.user_id), text, reason, context)
 
     async def _notify(
         self,

@@ -45,10 +45,18 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
 
     def _save_config(self):
         self.config_path.write_text(
-            json.dumps({
-                gid: {"enabled": g.enabled, "notify_users": g.notify_users, "warn_in_group": g.warn_in_group}
-                for gid, g in self.groups.items()
-            }, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    gid: {
+                        "enabled": g.enabled,
+                        "notify_users": g.notify_users,
+                        "warn_in_group": g.warn_in_group,
+                    }
+                    for gid, g in self.groups.items()
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -92,7 +100,8 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         try:
             recent = await self.api.get_group_msg_history(group_id, count=10)
             prev = [
-                m for m in recent
+                m
+                for m in recent
                 if m.time < event.time
                 and m.message_id != event.message_id
                 and str(m.message_id) not in RECENT_SENSITIVE
@@ -107,10 +116,20 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
             RECENT_SENSITIVE.add(event.message_id)
-            logger.info(f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}")
+            logger.info(
+                f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}"
+            )
             await self._notify(cfg, group_id, str(event.user_id), text, reason)
 
-    async def _notify(self, cfg: SensitiveGroupConfig, group_id: str, user_id: str, text: str, reason: str):
+    async def _notify(
+        self,
+        cfg: SensitiveGroupConfig,
+        group_id: str,
+        user_id: str,
+        text: str,
+        reason: str,
+        context: str = "",
+    ):
         msg = (
             f"敏感消息提醒\n"
             f"群: {group_id}\n"
@@ -118,6 +137,8 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             f"内容: {text}\n"
             f"原因: {reason}"
         )
+        if context:
+            msg += f"\n对话背景:\n{context}"
         for uid in cfg.notify_users:
             try:
                 await self.api.post_private_msg(uid, text=msg)
@@ -125,7 +146,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                 logger.error(f"私聊通知 {uid} 失败: {e}")
         if cfg.warn_in_group:
             try:
-                await self.api.post_group_msg(group_id, text="请注意发言内容，避免发送敏感信息。")
+                await self.api.post_group_msg(
+                    group_id, text="请注意发言内容，避免发送敏感信息。"
+                )
             except Exception as e:
                 logger.error(f"群内警告失败: {e}")
 
@@ -136,8 +159,12 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             self.groups[group_id] = SensitiveGroupConfig()
         return self.groups[group_id]
 
-    @command_registry.command("sensitive_llm", description="[root] 配置 LLM API（私聊，全局共享）")
-    async def cmd_llm(self, event: PrivateMessageEvent, base_url: str, api_key: str, model: str):
+    @command_registry.command(
+        "sensitive_llm", description="[root] 配置 LLM API（私聊，全局共享）"
+    )
+    async def cmd_llm(
+        self, event: PrivateMessageEvent, base_url: str, api_key: str, model: str
+    ):
         if event.message_type != "private":
             await event.reply("请私聊使用此命令")
             return
@@ -163,7 +190,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         self._save_config()
         await event.reply(f"敏感消息监听已{'启用' if cfg.enabled else '禁用'}")
 
-    @command_registry.command("sensitive_notify", description="[管理员] 通知目标 切换添加/移除")
+    @command_registry.command(
+        "sensitive_notify", description="[管理员] 通知目标 切换添加/移除"
+    )
     @param(name="qq", default="", help="接收通知的 QQ 号")
     async def cmd_notify(self, event: GroupMessageEvent, qq: str = ""):
         if not await self._is_group_admin(event.group_id, event.user_id):
@@ -204,7 +233,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             f"  状态: {'启用' if cfg and cfg.enabled else '禁用'}",
         ]
         if cfg and cfg.enabled:
-            lines.append(f"  通知对象: {', '.join(cfg.notify_users) if cfg.notify_users else '无'}")
+            lines.append(
+                f"  通知对象: {', '.join(cfg.notify_users) if cfg.notify_users else '无'}"
+            )
             lines.append(f"  群内警告: {'是' if cfg.warn_in_group else '否'}")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")

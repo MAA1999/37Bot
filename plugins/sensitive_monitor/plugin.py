@@ -36,6 +36,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                         enabled=g.get("enabled", False),
                         notify_users=g.get("notify_users", []),
                         warn_in_group=g.get("warn_in_group", False),
+                        append_context=g.get("append_context", False),
+                        max_context_messages=g.get("max_context_messages", 5),
+                        max_context_chars=g.get("max_context_chars", 800),
                     )
                     for gid, g in data.items()
                 }
@@ -51,6 +54,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                         "enabled": g.enabled,
                         "notify_users": g.notify_users,
                         "warn_in_group": g.warn_in_group,
+                        "append_context": g.append_context,
+                        "max_context_messages": g.max_context_messages,
+                        "max_context_chars": g.max_context_chars,
                     }
                     for gid, g in self.groups.items()
                 },
@@ -86,9 +92,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if len(text) < MIN_TEXT_LENGTH:
             return
 
-        if event.message_id in RECENT_PROCESSED:
+        if str(event.message_id) in RECENT_PROCESSED:
             return
-        RECENT_PROCESSED.add(event.message_id)
+        RECENT_PROCESSED.add(str(event.message_id))
         if len(RECENT_PROCESSED) > MAX_RECENT:
             RECENT_PROCESSED.clear()
             RECENT_SENSITIVE.clear()
@@ -98,24 +104,33 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
 
         context = ""
         try:
-            recent = await self.api.get_group_msg_history(group_id, count=10)
-            prev = [
-                m
-                for m in recent
-                if m.time < event.time
-                and m.message_id != event.message_id
-                and str(m.message_id) not in RECENT_SENSITIVE
-            ]
-            if prev:
-                context = "\n".join(
-                    f"[{m.user_id}]: {m.raw_message}" for m in reversed(prev[-5:])
-                )
+            # Only build message context when group config enables it
+            if cfg.append_context:
+                count = max(cfg.max_context_messages, 10)
+                recent = await self.api.get_group_msg_history(group_id, count=count)
+                prev = [
+                    m
+                    for m in recent
+                    if m.time < event.time
+                    and m.message_id != event.message_id
+                    and str(m.message_id) not in RECENT_SENSITIVE
+                ]
+                if prev:
+                    context_str = "\n".join(
+                        f"[{m.user_id}]: {m.raw_message}"
+                        for m in reversed(prev[-cfg.max_context_messages :])
+                    )
+                    # enforce max characters
+                    if len(context_str) > cfg.max_context_chars:
+                        context = context_str[: cfg.max_context_chars].rstrip() + "..."
+                    else:
+                        context = context_str
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
         is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
-            RECENT_SENSITIVE.add(event.message_id)
+            RECENT_SENSITIVE.add(str(event.message_id))
             logger.info(
                 f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}"
             )
@@ -137,7 +152,8 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             f"内容: {text}\n"
             f"原因: {reason}"
         )
-        if context:
+        # Only include context when enabled for the group
+        if cfg.append_context and context:
             msg += f"\n对话背景:\n{context}"
         for uid in cfg.notify_users:
             try:
@@ -237,6 +253,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                 f"  通知对象: {', '.join(cfg.notify_users) if cfg.notify_users else '无'}"
             )
             lines.append(f"  群内警告: {'是' if cfg.warn_in_group else '否'}")
+            lines.append(f"  附加对话背景: {'是' if cfg.append_context else '否'}")
+            lines.append(f"  对话消息数上限: {cfg.max_context_messages}")
+            lines.append(f"  对话字符上限: {cfg.max_context_chars}")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
         await event.reply("\n".join(lines))

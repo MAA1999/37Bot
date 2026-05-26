@@ -17,6 +17,23 @@ MAX_RECENT = 500
 MIN_TEXT_LENGTH = 4
 
 
+def _build_clean_message(message) -> str:
+    """Convert a MessageArray to clean text, replacing non-text segments with summaries."""
+    parts = []
+    for seg in message:
+        if seg.msg_seg_type == "text":
+            parts.append(seg.text)
+        elif seg.msg_seg_type == "at":
+            parts.append(f"@{seg.qq}" if seg.qq != "all" else "@全体成员")
+        elif seg.msg_seg_type == "reply":
+            continue
+        else:
+            summary = seg.get_summary()
+            if summary and summary != "该消息不支持预览":
+                parts.append(summary)
+    return "".join(parts)
+
+
 class SensitiveMonitorPlugin(NcatBotPlugin):
     name = "SensitiveMonitorPlugin"
     version = "1.0.0"
@@ -86,7 +103,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if not cfg or not cfg.enabled:
             return
 
-        text = (event.raw_message or "").strip()
+        text = event.message.concatenate_text().strip()
         if not text or text.startswith("/"):
             return
         if len(text) < MIN_TEXT_LENGTH:
@@ -115,10 +132,12 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                 and str(m.message_id) not in RECENT_SENSITIVE
             ]
             if prev:
-                context = "\n".join(
-                    f"[{m.user_id}]: {m.raw_message}"
-                    for m in reversed(prev[-cfg.max_context_messages :])
-                )
+                lines = []
+                for m in reversed(prev[-cfg.max_context_messages :]):
+                    msg_text = _build_clean_message(m.message)
+                    if msg_text:
+                        lines.append(f"[{m.user_id}]: {msg_text}")
+                context = "\n".join(lines)
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 

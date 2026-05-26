@@ -104,27 +104,21 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
 
         context = ""
         try:
-            # Only build message context when group config enables it
-            if cfg.append_context:
-                count = max(cfg.max_context_messages, 10)
-                recent = await self.api.get_group_msg_history(group_id, count=count)
-                prev = [
-                    m
-                    for m in recent
-                    if m.time < event.time
-                    and m.message_id != event.message_id
-                    and str(m.message_id) not in RECENT_SENSITIVE
-                ]
-                if prev:
-                    context_str = "\n".join(
-                        f"[{m.user_id}]: {m.raw_message}"
-                        for m in reversed(prev[-cfg.max_context_messages :])
-                    )
-                    # enforce max characters
-                    if len(context_str) > cfg.max_context_chars:
-                        context = context_str[: cfg.max_context_chars].rstrip() + "..."
-                    else:
-                        context = context_str
+            # Fetch more than needed to account for filtered-out messages
+            fetch_count = max(cfg.max_context_messages, 10) + 10
+            recent = await self.api.get_group_msg_history(group_id, count=fetch_count)
+            prev = [
+                m
+                for m in recent
+                if m.time < event.time
+                and m.message_id != event.message_id
+                and str(m.message_id) not in RECENT_SENSITIVE
+            ]
+            if prev:
+                context = "\n".join(
+                    f"[{m.user_id}]: {m.raw_message}"
+                    for m in reversed(prev[-cfg.max_context_messages :])
+                )
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
@@ -143,7 +137,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         user_id: str,
         text: str,
         reason: str,
-        context: str = "",
+        context: str,
     ):
         msg = (
             f"敏感消息提醒\n"
@@ -152,9 +146,11 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             f"内容: {text}\n"
             f"原因: {reason}"
         )
-        # Only include context when enabled for the group
         if cfg.append_context and context:
-            msg += f"\n对话背景:\n{context}"
+            truncated = context
+            if len(context) > cfg.max_context_chars:
+                truncated = context[:cfg.max_context_chars].rstrip() + "..."
+            msg += f"\n对话背景:\n{truncated}"
         for uid in cfg.notify_users:
             try:
                 await self.api.post_private_msg(uid, text=msg)

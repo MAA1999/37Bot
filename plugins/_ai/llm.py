@@ -239,24 +239,40 @@ class LLMClient:
             "注意区分正常政治讨论和恶意敏感言论。"
             "正常讨论（如聊政策影响、社会现象）不应判定为敏感。"
             "只有明显包含极端敏感词、反政府言论、分裂主义宣传等内容才判定为敏感。"
+            "\n\n"
+            "你必须严格输出 JSON，不要有任何额外文字：\n"
+            '{"sensitive": false, "reason": "简要理由"}\n\n'
+            "判断示例：\n"
+            '- "最近物价涨得好厉害啊" → {"sensitive": false, "reason": "正常社会现象讨论"}\n'
+            '- "我觉得这个政策方向不太对" → {"sensitive": false, "reason": "正常政策讨论"}\n'
+            '- "今天开会说要好好干活" → {"sensitive": false, "reason": "日常闲聊"}\n'
+            "- 若消息明确包含极端政治攻击、分裂主义口号、或反政府煽动言论 → "
+            '{"sensitive": true, "reason": "简述具体敏感类型"}'
         )
-        user_prompt = f"请判断以下 QQ 群消息是否包含政治敏感内容：\n\n消息内容：\n{message_text}"
+        user_prompt = f"请判断以下 QQ 群消息是否包含政治敏感内容：\n\n{message_text}"
         if context:
-            user_prompt += f"\n\n群聊上下文（其他群友的反应）：\n{context}"
-        user_prompt += "\n\n请先回答「是」或「否」，然后简要说明理由（不超过30字）。"
+            user_prompt += f"\n\n群聊上下文（用于辅助判断语境，不代表上下文本身违规）：\n{context}"
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        reply = await self.chat(messages, temperature=0.1, max_tokens=100)
+        reply = await self.chat(messages, temperature=0.1, max_tokens=150, stream=False)
         if reply is None:
+            logger.warning("LLM 请求失败，本轮敏感监测跳过")
             return False, "LLM 请求失败"
 
-        is_sensitive = reply.strip().startswith("是")
-        reason = reply.strip()
-        return is_sensitive, reason
+        try:
+            data = json.loads(reply.strip())
+            is_sensitive = bool(data.get("sensitive", False))
+            reason = str(data.get("reason", ""))
+            return is_sensitive, reason
+        except json.JSONDecodeError:
+            logger.warning(f"LLM 返回非 JSON，fallback 到旧规则: {reply[:100]}")
+            is_sensitive = reply.strip().startswith("是")
+            reason = reply.strip()
+            return is_sensitive, reason
 
     async def judge_question(self, project: str, message_text: str, context: str = "") -> bool:
         """判断消息是否在询问项目相关问题。返回 True/False。"""

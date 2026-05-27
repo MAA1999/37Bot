@@ -90,7 +90,7 @@ async def _health_probe_loop(get_client_fn):
 
 
 class LLMClient:
-    def __init__(self, base_url: str, api_key: str, model: str, backups: list[dict] = None):
+    def __init__(self, base_url: str, api_key: str, model: str, backups: list[dict] | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -277,25 +277,50 @@ class LLMClient:
     async def judge_question(self, project: str, message_text: str, context: str = "") -> bool:
         """判断消息是否在询问项目相关问题。返回 True/False。"""
         system_prompt = (
-            "你是一个消息分类助手。判断一条QQ群消息是否在【主动提问/求助】关于特定项目的问题。\n"
-            "回答「是」的条件：消息明确在询问项目的用法、报错、配置、功能、兼容性等技术问题，或请求帮助解决与项目相关的具体问题。\n"
+            "你是一个消息分类助手。判断一条QQ群消息是否在【主动提问/求助】关于特定项目的问题。\n\n"
+            "## 判断标准\n\n"
+            "回答「是」的条件（必须同时满足）：\n"
+            "1. 消息是一个独立发起的、明确的提问或求助（而非回复/接话）\n"
+            "2. 问的内容与该项目相关（用法、报错、配置、功能、兼容性、安装、部署、API、插件等）\n"
+            "3. 消息发送者确实期望得到帮助或答案\n\n"
             "回答「否」的条件（任一满足即否）：\n"
             "- 纯闲聊、感叹、吐槽（如\"这项目真好用\"、\"牛逼\"、\"666\"）\n"
-            "- 分享、晒图、通知、公告\n"
+            "- 分享、晒图、通知、公告、推荐\n"
             "- 虽含问号但实为反问/感叹（如\"这也太强了吧？\"、\"真的假的？\"、\"不是吧？\"）\n"
-            "- 问的是与项目无关的事（如日常聊天、天气、游戏、吃啥等）\n"
+            "- 问的是与项目完全无关的事（日常聊天、天气、游戏、吃啥等）\n"
             "- 回复/接话别人的内容，而非独立发起提问\n"
             "- 纯表情包、图片、链接分享（无实质提问文字）\n"
             "- 自问自答、自言自语\n"
-            "如果不确定，倾向于回答「否」。"
+            "- 已经解决的问题（如\"搞定了\"、\"好了没问题了\"）\n"
+            "- 在描述自己做了什么（陈述），而不是寻求帮助\n"
+            "- 含疑问词但语义是日常闲聊（如\"吃啥\"、\"干嘛呢\"、\"谁来打游戏\"）\n\n"
+            "如果不确定，倾向于回答「否」（宁可漏答，不要误答）。\n\n"
+            "## 示例\n\n"
+            "消息: \"这个项目怎么安装？\" → 是\n"
+            "消息: \"为什么启动报错 ModuleNotFoundError？\" → 是\n"
+            "消息: \"支持Python3.12吗\" → 是\n"
+            "消息: \"插件怎么加载不出来\" → 是\n"
+            "消息: \"有没有docker部署教程\" → 是\n"
+            "消息: \"配置文件放哪个目录\" → 是\n"
+            "消息: \"这功能不错啊\" → 否\n"
+            "消息: \"真的假的？\" → 否\n"
+            "消息: \"有没有人一起打游戏\" → 否\n"
+            "消息: \"哈哈哈笑死\" → 否\n"
+            "消息: \"我推荐大家用这个\" → 否\n"
+            "消息: \"帮我点个赞\" → 否\n"
+            "消息: \"说啥呢\" → 否\n"
+            "消息: \"什么都行随便\" → 否\n"
+            "消息: \"已经搞定了\" → 否\n"
+            "消息: \"应该是吧\" → 否\n\n"
+            "只回答「是」或「否」，不要解释。"
         )
         user_prompt = (
             f"项目名：{project}\n\n"
             f"消息内容：\n{message_text}"
         )
         if context:
-            user_prompt += f"\n\n群聊上下文：\n{context}"
-        user_prompt += "\n\n这条消息是否在主动询问关于上述项目的技术问题？只回答「是」或「否」。"
+            user_prompt += f"\n\n群聊上下文（仅供参考，用于理解消息语境）：\n{context}"
+        user_prompt += "\n\n判断："
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -306,7 +331,9 @@ class LLMClient:
         if reply is None:
             return False
 
-        return reply.strip().startswith("是")
+        # 严格匹配：只有回复以「是」开头才算通过
+        answer = reply.strip()
+        return answer.startswith("是")
 
     async def answer_question(self, question: str, system_prompt: str, context: str = "") -> str | None:
         """回答项目相关问题。"""

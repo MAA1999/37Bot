@@ -12,7 +12,12 @@ class LLMConfig:
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    backups: list[dict] = None  # [{base_url, api_key, model}, ...]
+    backups: list[dict] | None = None  # [{base_url, api_key, model}, ...]
+    enabled: bool = True
+    auto_reply: bool = True
+    cooldown: int = 0
+    ai_system_prompt: str = ""
+    timeout: float = 30.0
 
     def __post_init__(self):
         if self.backups is None:
@@ -28,6 +33,11 @@ def load_llm_config() -> LLMConfig:
                 api_key=data.get("api_key", ""),
                 model=data.get("model", ""),
                 backups=data.get("backups", []),
+            enabled=data.get("enabled", True),
+            auto_reply=data.get("auto_reply", True),
+            cooldown=data.get("cooldown", 0),
+            ai_system_prompt=data.get("ai_system_prompt", ""),
+            timeout=data.get("timeout", 30.0),
             )
         except Exception:
             pass
@@ -39,7 +49,8 @@ def save_llm_config(cfg: LLMConfig):
     SHARED_CONFIG_PATH.write_text(
         json.dumps({
             "base_url": cfg.base_url, "api_key": cfg.api_key, "model": cfg.model,
-            "backups": cfg.backups,
+            "backups": cfg.backups, "enabled": cfg.enabled, "auto_reply": cfg.auto_reply,
+            "cooldown": cfg.cooldown, "ai_system_prompt": cfg.ai_system_prompt, "timeout": cfg.timeout,
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

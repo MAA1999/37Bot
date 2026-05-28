@@ -21,6 +21,7 @@ class HelpPlugin(NcatBotPlugin):
         "qahelper": "Q&A问答",
         "groupsummary": "群聊总结",
         "arkrec": "少人Wiki",
+        "skland": "森空岛签到",
     }
 
     MODULE_ALIASES = {
@@ -43,10 +44,14 @@ class HelpPlugin(NcatBotPlugin):
         "arkrec": "arkrec",
         "wiki": "arkrec",
         "少人": "arkrec",
+        "skland": "skland",
+        "森空岛": "skland",
+        "签到": "skland",
     }
 
     MODULE_EXAMPLES = {
         "arkrec": "/arkrec H17-3 特种\n/arkrec_exclusive 令 常规队\n/arkrec_brief 特种",
+        "skland": "/skland_config add <token>\n/skland_config group\n/skland_sign",
         "groupsummary": "/summary 300\n/summary_on\n/summary_status",
         "qahelper": "/qa on M9A\n/qa_status\n/qa_refresh",
         "groupadmin": "/ga_enable\n/ga_status",

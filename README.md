@@ -55,6 +55,26 @@ uv run python main.py
 - `/arkrec_status`：查看订阅状态和数据库统计
 - `/arkrec_config <email> <password>`：\[root，私聊] 配置账号
 
+### 森空岛签到
+
+- `/skland_config add <鹰角token>`：\[root，私聊] 添加森空岛签到账号
+  - 添加时会立即校验 token、读取绑定角色，并优先使用第一个明日方舟角色 `uid` 作为本地账号标识
+  - 添加成功后会立刻尝试签到，并返回本次签到结果
+- `/skland_sign [uid]`：\[root] 立即签到；不传 `uid` 时签到全部账号
+- `/skland_status`：\[root] 查看签到配置、通知群、账号 UID、上次定时日期
+- `/skland_config group [群号]`：\[root] 添加通知群；群内不传群号时使用当前群
+- `/skland_config ungroup <群号>`：\[root] 移除通知群
+- `/skland_config remove <uid>`：\[root] 删除账号
+- `/skland_config hour <0-23>`：\[root] 设置每日定时签到小时，分钟固定为 `01`
+- `/skland_config on|off`：\[root] 启用或禁用每日自动签到
+
+说明：
+
+- 默认每日本机时区 `00:01` 对所有账号自动签到，当前会同时尝试明日方舟和终末地，并把结果发送到已配置通知群。
+- token、设备 ID、所属 QQ 用户等数据保存在插件工作目录的 `config.json`，不会写入主配置文件。
+- token 失效或换取森空岛 `cred` 失败时，只会在首次失败时提醒一次：私聊添加该账号的 QQ 用户，并在通知群内 at 对应用户；后续签到恢复成功会自动清除提醒状态。
+- 日志会记录 `uid`、所属 QQ、token 指纹、设备 ID、接口阶段、角色签到结果和耗时，便于排查；不会记录明文 token。
+
 ### 群聊总结
 
 - `/summary [消息数|today|YYYY-MM-DD]`：生成群聊总结
@@ -104,6 +124,7 @@ uv run python main.py
 │   ├── mirrorchyan/
 │   ├── qa_helper/
 │   ├── sensitive_monitor/
+│   ├── skland/
 │   ├── status/
 │   └── todo/
 ├── 37bot.service

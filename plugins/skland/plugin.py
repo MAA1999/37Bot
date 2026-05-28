@@ -331,7 +331,7 @@ class SklandPlugin(NcatBotPlugin):
         ]
         await event.reply("\n".join(lines))
 
-    @command_registry.command("skland_config", description="配置森空岛签到")
+    @command_registry.command("skland_config", description="配置森空岛签到 (add/remove 全员，其余需 root)")
     @param(name="action", default="", help="add/remove/hour/on/off/list")
     @param(name="name", default="", help="token 或参数")
     @param(name="value", default="", help="token 或参数")

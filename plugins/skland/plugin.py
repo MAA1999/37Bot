@@ -81,6 +81,16 @@ class SklandPlugin(NcatBotPlugin):
     def _is_root(self, event: BaseMessageEvent) -> bool:
         return self.rbac_manager.user_has_role(str(event.user_id), "root")
 
+    def _can_manage_account(self, event: BaseMessageEvent, account_name: str) -> bool:
+        """账号 owner 或 root 可以管理该账号。"""
+        if self._is_root(event):
+            return True
+        uid = str(event.user_id)
+        for a in self.cfg.accounts:
+            if a.name == account_name:
+                return a.owner_user_id == uid
+        return False
+
     def _token_fingerprint(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
@@ -302,12 +312,9 @@ class SklandPlugin(NcatBotPlugin):
         self._save_config()
         logger.info(f"skland daily done date={today}")
 
-    @command_registry.command("skland_sign", description="[root] 立即执行森空岛签到")
+    @command_registry.command("skland_sign", description="立即执行森空岛签到")
     @param(name="name", default="", help="账号名，可选")
     async def sign_cmd(self, event: BaseMessageEvent, name: str = ""):
-        if not self._is_root(event):
-            await event.reply("需要 root 权限")
-            return
         await event.reply(await self._run_sign(name.strip()))
 
     @command_registry.command("skland_status", description="[root] 查看森空岛签到配置")
@@ -324,8 +331,8 @@ class SklandPlugin(NcatBotPlugin):
         ]
         await event.reply("\n".join(lines))
 
-    @command_registry.command("skland_config", description="[root] 配置森空岛签到")
-    @param(name="action", default="", help="add/remove/group/hour/on/off/list")
+    @command_registry.command("skland_config", description="配置森空岛签到")
+    @param(name="action", default="", help="add/remove/hour/on/off/list")
     @param(name="name", default="", help="token 或参数")
     @param(name="value", default="", help="token 或参数")
     async def config_cmd(
@@ -335,10 +342,6 @@ class SklandPlugin(NcatBotPlugin):
         name: str = "",
         value: str = "",
     ):
-        if not self._is_root(event):
-            await event.reply("需要 root 权限")
-            return
-
         action = action.strip().lower()
         name = name.strip()
         value = value.strip()
@@ -367,11 +370,19 @@ class SklandPlugin(NcatBotPlugin):
             return
 
         if action == "remove":
+            if not self._can_manage_account(event, name):
+                await event.reply("需要 root 权限或为该账号的添加者")
+                return
             before = len(self.cfg.accounts)
             self.cfg.accounts = [a for a in self.cfg.accounts if a.name != name]
             self._save_config()
             await event.reply("已删除" if len(self.cfg.accounts) < before else "未找到账号")
             return
+
+        if action in ("hour", "on", "off", "list"):
+            if not self._is_root(event):
+                await event.reply("需要 root 权限")
+                return
 
         if action == "hour":
             try:
@@ -406,12 +417,9 @@ class SklandPlugin(NcatBotPlugin):
             "/skland_config on|off|list"
         )
 
-    @command_registry.command("skland_sms", description="[root] 森空岛短信登录: <手机号>")
+    @command_registry.command("skland_sms", description="森空岛短信登录: <手机号>")
     @param(name="phone", default="", help="手机号")
     async def sms_cmd(self, event: BaseMessageEvent, phone: str = ""):
-        if not self._is_root(event):
-            await event.reply("需要 root 权限")
-            return
         phone = phone.strip()
         if not phone:
             await event.reply("用法: /skland_sms <手机号>")
@@ -439,12 +447,9 @@ class SklandPlugin(NcatBotPlugin):
         }
         await event.reply("验证码已发送，请在 5 分钟内发送 /skland_sms_code <验证码>")
 
-    @command_registry.command("skland_sms_code", description="[root] 森空岛短信登录验证码: <验证码>")
+    @command_registry.command("skland_sms_code", description="森空岛短信登录验证码: <验证码>")
     @param(name="code", default="", help="验证码")
     async def sms_code_cmd(self, event: BaseMessageEvent, code: str = ""):
-        if not self._is_root(event):
-            await event.reply("需要 root 权限")
-            return
         code = code.strip()
         if not code:
             await event.reply("用法: /skland_sms_code <验证码>")
@@ -478,11 +483,8 @@ class SklandPlugin(NcatBotPlugin):
         self._sms_sessions.pop(str(event.user_id), None)
         await event.reply(f"短信登录成功，已添加森空岛账号 UID: {account.name}\n\n{sign_text}")
 
-    @command_registry.command("skland_qr", description="[root] 森空岛二维码登录")
+    @command_registry.command("skland_qr", description="森空岛二维码登录")
     async def qr_cmd(self, event: BaseMessageEvent):
-        if not self._is_root(event):
-            await event.reply("需要 root 权限")
-            return
         await event.reply(
             "二维码登录暂未启用：当前官网 Web SDK 的 QR/OAuth 流程只能稳定拿到一次性 code/森空岛 cred，"
             "还不能确认可取得长期鹰角 token；为避免保存短期凭据导致定时签到失效，暂不落库。"

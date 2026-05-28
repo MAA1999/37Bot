@@ -76,6 +76,7 @@ uv run python main.py
 - token、设备 ID、所属 QQ 用户等数据保存在插件工作目录的 `config.json`，不会写入主配置文件。
 - token 失效或换取森空岛 `cred` 失败时，只会在首次失败时提醒一次：群来源会在对应群内 at 添加者，私聊来源会私聊添加者；后续签到恢复成功会自动清除提醒状态。
 - 日志会记录 `uid`、所属 QQ、token 指纹、设备 ID、接口阶段、角色签到结果和耗时，便于排查；不会记录明文 token。
+- 森空岛 API 签名算法参考了 [YueHen14/skyland-auto-sign](https://github.com/YueHen14/skyland-auto-sign) 和 [UKMeng/nonebot-plugin-skland-arksign](https://github.com/UKMeng/nonebot-plugin-skland-arksign)。
 
 ### 群聊总结
 

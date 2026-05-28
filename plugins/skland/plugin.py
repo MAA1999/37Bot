@@ -315,7 +315,7 @@ class SklandPlugin(NcatBotPlugin):
     @command_registry.command("skland_sign", description="立即执行森空岛签到")
     @param(name="name", default="", help="账号名，可选")
     async def sign_cmd(self, event: BaseMessageEvent, name: str = ""):
-        await event.reply(await self._run_sign(name.strip()))
+        await event.reply(await self._run_sign(name.strip().strip("<>")))
 
     @command_registry.command("skland_status", description="[root] 查看森空岛签到配置")
     async def status_cmd(self, event: BaseMessageEvent):
@@ -343,8 +343,8 @@ class SklandPlugin(NcatBotPlugin):
         value: str = "",
     ):
         action = action.strip().lower()
-        name = name.strip()
-        value = value.strip()
+        name = name.strip().strip("<>")
+        value = value.strip().strip("<>")
 
         if action == "add":
             if not isinstance(event, PrivateMessageEvent):
@@ -420,7 +420,7 @@ class SklandPlugin(NcatBotPlugin):
     @command_registry.command("skland_sms", description="森空岛短信登录: <手机号>")
     @param(name="phone", default="", help="手机号")
     async def sms_cmd(self, event: BaseMessageEvent, phone: str = ""):
-        phone = phone.strip()
+        phone = phone.strip().strip("<>")
         if not phone:
             await event.reply("用法: /skland_sms <手机号>")
             return
@@ -450,7 +450,7 @@ class SklandPlugin(NcatBotPlugin):
     @command_registry.command("skland_sms_code", description="森空岛短信登录验证码: <验证码>")
     @param(name="code", default="", help="验证码")
     async def sms_code_cmd(self, event: BaseMessageEvent, code: str = ""):
-        code = code.strip()
+        code = code.strip().strip("<>")
         if not code:
             await event.reply("用法: /skland_sms_code <验证码>")
             return

@@ -21,6 +21,8 @@ class SklandAccount:
     token: str
     device_id: str = ""
     owner_user_id: str = ""
+    notify_type: str = "private"
+    notify_id: str = ""
     auth_failed_notified: bool = False
     last_error: str = ""
     last_success_at: str = ""
@@ -31,7 +33,6 @@ class SklandConfig:
     enabled: bool = True
     hour: int = 0
     minute: int = 1
-    notify_groups: list[str] = field(default_factory=list)
     accounts: list[SklandAccount] = field(default_factory=list)
     last_run_date: str = ""
 
@@ -59,7 +60,6 @@ class SklandPlugin(NcatBotPlugin):
                 enabled=bool(raw.get("enabled", True)),
                 hour=int(raw.get("hour", 0)),
                 minute=int(raw.get("minute", 1)),
-                notify_groups=[str(x) for x in raw.get("notify_groups", [])],
                 accounts=accounts,
                 last_run_date=str(raw.get("last_run_date", "")),
             )
@@ -83,7 +83,18 @@ class SklandPlugin(NcatBotPlugin):
     def _now_text(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    async def _build_account_from_token(self, token: str, owner_user_id: str) -> SklandAccount:
+    def _event_notify_target(self, event: BaseMessageEvent) -> tuple[str, str]:
+        if isinstance(event, GroupMessageEvent):
+            return "group", str(event.group_id)
+        return "private", str(event.user_id)
+
+    async def _build_account_from_token(
+        self,
+        token: str,
+        owner_user_id: str,
+        notify_type: str,
+        notify_id: str,
+    ) -> SklandAccount:
         client = SklandClient()
         token_fp = self._token_fingerprint(token)
         try:
@@ -105,6 +116,8 @@ class SklandPlugin(NcatBotPlugin):
                 token=token,
                 device_id=client.device_id,
                 owner_user_id=owner_user_id,
+                notify_type=notify_type,
+                notify_id=notify_id,
             )
         finally:
             await client.close()
@@ -150,17 +163,48 @@ class SklandPlugin(NcatBotPlugin):
         owner = account.owner_user_id
         text = f"森空岛账号 {account.name} 的 token 可能已过期，自动刷新/换取 cred 失败，请更新 token。错误: {error}"
         logger.warning(f"skland auth failed notify uid={account.name} owner={owner} error={error}")
-        if owner:
-            try:
-                await self.api.post_private_msg(owner, text=text)
-            except Exception as e:
-                logger.error(f"森空岛 token 失效私聊提醒失败 uid={account.name} owner={owner}: {e}")
-        for group_id in self.cfg.notify_groups:
+        if account.notify_type == "group" and account.notify_id:
             try:
                 prefix = f"[CQ:at,qq={owner}] " if owner else ""
-                await self.api.post_group_msg(group_id, text=prefix + text)
+                await self.api.post_group_msg(account.notify_id, text=prefix + text)
             except Exception as e:
-                logger.error(f"森空岛 token 失效群提醒失败 uid={account.name} group={group_id}: {e}")
+                logger.error(f"森空岛 token 失效群提醒失败 uid={account.name} group={account.notify_id}: {e}")
+            return
+
+        target = account.notify_id or owner
+        if target:
+            try:
+                await self.api.post_private_msg(target, text=text)
+            except Exception as e:
+                logger.error(f"森空岛 token 失效私聊提醒失败 uid={account.name} user={target}: {e}")
+
+    async def _send_account_result(self, account: SklandAccount, text: str):
+        if account.notify_type == "group" and account.notify_id:
+            try:
+                await self.api.post_group_msg(account.notify_id, text=text[:2000])
+            except Exception as e:
+                logger.error(f"发送森空岛签到结果到群失败 uid={account.name} group={account.notify_id}: {e}")
+            return
+
+        target = account.notify_id or account.owner_user_id
+        if target:
+            try:
+                await self.api.post_private_msg(target, text=text[:2000])
+            except Exception as e:
+                logger.error(f"发送森空岛签到结果到私聊失败 uid={account.name} user={target}: {e}")
+
+    async def _run_one_text(self, account: SklandAccount) -> str:
+        lines = await self._run_one(account)
+        return self._format_results("森空岛签到", lines)
+
+    async def _run_daily_sign(self):
+        for account in self.cfg.accounts:
+            text = await self._run_one_text(account)
+            await self._send_account_result(account, text)
+            logger.info(
+                f"skland daily account sent uid={account.name} "
+                f"notify_type={account.notify_type} notify_id={account.notify_id}"
+            )
 
     async def _run_one(self, account: SklandAccount) -> list[str]:
         client = SklandClient(account.device_id or None)
@@ -216,7 +260,7 @@ class SklandPlugin(NcatBotPlugin):
             return self._format_results("森空岛签到", output)
 
     async def _daily_tick(self):
-        if not self.cfg.enabled or not self.cfg.accounts or not self.cfg.notify_groups:
+        if not self.cfg.enabled or not self.cfg.accounts:
             return
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
@@ -226,14 +270,9 @@ class SklandPlugin(NcatBotPlugin):
             return
 
         logger.info(f"skland daily start date={today} accounts={len(self.cfg.accounts)}")
-        text = await self._run_sign()
+        await self._run_daily_sign()
         self.cfg.last_run_date = today
         self._save_config()
-        for group_id in self.cfg.notify_groups:
-            try:
-                await self.api.post_group_msg(group_id, text=text[:2000])
-            except Exception as e:
-                logger.error(f"发送森空岛签到结果到群 {group_id} 失败: {e}")
         logger.info(f"skland daily done date={today}")
 
     @command_registry.command("skland_sign", description="[root] 立即执行森空岛签到")
@@ -253,7 +292,6 @@ class SklandPlugin(NcatBotPlugin):
             "森空岛签到配置",
             f"状态: {'启用' if self.cfg.enabled else '禁用'}",
             f"定时: 每日 {self.cfg.hour:02d}:{self.cfg.minute:02d}",
-            f"通知群: {', '.join(self.cfg.notify_groups) or '未配置'}",
             f"账号UID: {', '.join(a.name for a in self.cfg.accounts) or '未配置'}",
             f"上次定时: {self.cfg.last_run_date or '无'}",
         ]
@@ -280,14 +318,20 @@ class SklandPlugin(NcatBotPlugin):
 
         if action == "add":
             if not isinstance(event, PrivateMessageEvent):
-                await event.reply("添加 token 请私聊使用")
+                await event.reply("token 添加请私聊使用；群内登录请使用后续 QR/短信登录入口")
                 return
             token = value or name
             if not token:
                 await event.reply("用法: /skland_config add <鹰角token>")
                 return
+            notify_type, notify_id = self._event_notify_target(event)
             try:
-                account = await self._build_account_from_token(token, str(event.user_id))
+                account = await self._build_account_from_token(
+                    token,
+                    str(event.user_id),
+                    notify_type,
+                    notify_id,
+                )
             except Exception as e:
                 logger.error(f"添加森空岛账号失败: {e}")
                 await event.reply(f"添加失败: {e}")
@@ -305,26 +349,6 @@ class SklandPlugin(NcatBotPlugin):
             self.cfg.accounts = [a for a in self.cfg.accounts if a.name != name]
             self._save_config()
             await event.reply("已删除" if len(self.cfg.accounts) < before else "未找到账号")
-            return
-
-        if action == "group":
-            group_id = value or name
-            if not group_id and isinstance(event, GroupMessageEvent):
-                group_id = str(event.group_id)
-            if not group_id:
-                await event.reply("用法: /skland_config group <群号>")
-                return
-            if group_id not in self.cfg.notify_groups:
-                self.cfg.notify_groups.append(group_id)
-            self._save_config()
-            await event.reply(f"已添加通知群: {group_id}")
-            return
-
-        if action == "ungroup":
-            group_id = value or name
-            self.cfg.notify_groups = [g for g in self.cfg.notify_groups if g != group_id]
-            self._save_config()
-            await event.reply(f"已移除通知群: {group_id}")
             return
 
         if action == "hour":
@@ -356,8 +380,6 @@ class SklandPlugin(NcatBotPlugin):
             "用法:\n"
             "/skland_config add <鹰角token>  私聊添加，自动用角色 uid 命名\n"
             "/skland_config remove <uid>\n"
-            "/skland_config group [群号]\n"
-            "/skland_config ungroup <群号>\n"
             "/skland_config hour <0-23>\n"
             "/skland_config on|off|list"
         )

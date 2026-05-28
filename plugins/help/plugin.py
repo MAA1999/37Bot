@@ -51,7 +51,7 @@ class HelpPlugin(NcatBotPlugin):
 
     MODULE_EXAMPLES = {
         "arkrec": "/arkrec H17-3 特种\n/arkrec_exclusive 令 常规队\n/arkrec_brief 特种",
-        "skland": "/skland_config add <token>\n/skland_sign\n/skland_status",
+        "skland": "/skland_config add <token>\n/skland_sms <手机号>\n/skland_sign",
         "groupsummary": "/summary 300\n/summary_on\n/summary_status",
         "qahelper": "/qa on M9A\n/qa_status\n/qa_refresh",
         "groupadmin": "/ga_enable\n/ga_status",

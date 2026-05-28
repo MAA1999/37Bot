@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -13,6 +14,8 @@ from ncatbot.utils import get_log
 from .api import SignResult, SklandAuthError, SklandClient
 
 logger = get_log("Skland")
+
+SMS_SESSION_TTL = 300
 
 
 @dataclass
@@ -47,6 +50,7 @@ class SklandPlugin(NcatBotPlugin):
         self.config_path = self.workspace / "config.json"
         self.cfg = self._load_config()
         self._lock = asyncio.Lock()
+        self._sms_sessions: dict[str, dict] = {}
         self.add_scheduled_task(self._daily_tick, "skland_daily_tick", "60s")
         logger.info("Skland scheduled task registered")
 
@@ -121,6 +125,29 @@ class SklandPlugin(NcatBotPlugin):
             )
         finally:
             await client.close()
+
+    async def _add_account_from_token(
+        self,
+        token: str,
+        owner_user_id: str,
+        notify_type: str,
+        notify_id: str,
+    ) -> tuple[SklandAccount, str]:
+        account = await self._build_account_from_token(
+            token,
+            owner_user_id,
+            notify_type,
+            notify_id,
+        )
+        self.cfg.accounts = [a for a in self.cfg.accounts if a.name != account.name]
+        self.cfg.accounts.append(account)
+        self._save_config()
+        logger.info(
+            f"skland account saved uid={account.name} owner={account.owner_user_id} "
+            f"notify_type={account.notify_type} notify_id={account.notify_id}"
+        )
+        sign_text = await self._run_sign(account.name)
+        return account, sign_text
 
     def _format_results(self, title: str, lines: list[str]) -> str:
         if not lines:
@@ -326,7 +353,7 @@ class SklandPlugin(NcatBotPlugin):
                 return
             notify_type, notify_id = self._event_notify_target(event)
             try:
-                account = await self._build_account_from_token(
+                account, sign_text = await self._add_account_from_token(
                     token,
                     str(event.user_id),
                     notify_type,
@@ -336,11 +363,6 @@ class SklandPlugin(NcatBotPlugin):
                 logger.error(f"添加森空岛账号失败: {e}")
                 await event.reply(f"添加失败: {e}")
                 return
-            self.cfg.accounts = [a for a in self.cfg.accounts if a.name != account.name]
-            self.cfg.accounts.append(account)
-            self._save_config()
-            logger.info(f"skland account saved uid={account.name} owner={account.owner_user_id}")
-            sign_text = await self._run_sign(account.name)
             await event.reply(f"已添加森空岛账号 UID: {account.name}\n\n{sign_text}")
             return
 
@@ -382,6 +404,88 @@ class SklandPlugin(NcatBotPlugin):
             "/skland_config remove <uid>\n"
             "/skland_config hour <0-23>\n"
             "/skland_config on|off|list"
+        )
+
+    @command_registry.command("skland_sms", description="[root] 森空岛短信登录: <手机号>")
+    @param(name="phone", default="", help="手机号")
+    async def sms_cmd(self, event: BaseMessageEvent, phone: str = ""):
+        if not self._is_root(event):
+            await event.reply("需要 root 权限")
+            return
+        phone = phone.strip()
+        if not phone:
+            await event.reply("用法: /skland_sms <手机号>")
+            return
+        notify_type, notify_id = self._event_notify_target(event)
+        client = SklandClient()
+        try:
+            logger.info(
+                f"skland sms send start owner={event.user_id} phone_hash={self._token_fingerprint(phone)} "
+                f"notify_type={notify_type} notify_id={notify_id}"
+            )
+            await client.send_phone_code(phone)
+        except Exception as e:
+            logger.error(f"森空岛短信验证码发送失败 owner={event.user_id}: {e}")
+            await event.reply(f"验证码发送失败: {e}")
+            return
+        finally:
+            await client.close()
+
+        self._sms_sessions[str(event.user_id)] = {
+            "phone": phone,
+            "notify_type": notify_type,
+            "notify_id": notify_id,
+            "created_at": time.time(),
+        }
+        await event.reply("验证码已发送，请在 5 分钟内发送 /skland_sms_code <验证码>")
+
+    @command_registry.command("skland_sms_code", description="[root] 森空岛短信登录验证码: <验证码>")
+    @param(name="code", default="", help="验证码")
+    async def sms_code_cmd(self, event: BaseMessageEvent, code: str = ""):
+        if not self._is_root(event):
+            await event.reply("需要 root 权限")
+            return
+        code = code.strip()
+        if not code:
+            await event.reply("用法: /skland_sms_code <验证码>")
+            return
+
+        session = self._sms_sessions.get(str(event.user_id))
+        if not session:
+            await event.reply("没有待完成的短信登录，请先使用 /skland_sms <手机号>")
+            return
+        if time.time() - float(session.get("created_at") or 0) > SMS_SESSION_TTL:
+            self._sms_sessions.pop(str(event.user_id), None)
+            await event.reply("短信登录已超时，请重新使用 /skland_sms <手机号>")
+            return
+
+        client = SklandClient()
+        try:
+            token = await client.get_token_by_phone_code(str(session["phone"]), code)
+            account, sign_text = await self._add_account_from_token(
+                token,
+                str(event.user_id),
+                str(session["notify_type"]),
+                str(session["notify_id"]),
+            )
+        except Exception as e:
+            logger.error(f"森空岛短信登录失败 owner={event.user_id}: {e}")
+            await event.reply(f"短信登录失败: {e}")
+            return
+        finally:
+            await client.close()
+
+        self._sms_sessions.pop(str(event.user_id), None)
+        await event.reply(f"短信登录成功，已添加森空岛账号 UID: {account.name}\n\n{sign_text}")
+
+    @command_registry.command("skland_qr", description="[root] 森空岛二维码登录")
+    async def qr_cmd(self, event: BaseMessageEvent):
+        if not self._is_root(event):
+            await event.reply("需要 root 权限")
+            return
+        await event.reply(
+            "二维码登录暂未启用：当前官网 Web SDK 的 QR/OAuth 流程只能稳定拿到一次性 code/森空岛 cred，"
+            "还不能确认可取得长期鹰角 token；为避免保存短期凭据导致定时签到失效，暂不落库。"
         )
 
 

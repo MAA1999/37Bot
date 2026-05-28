@@ -126,6 +126,27 @@ class SklandClient:
         data["_debug_elapsed_ms"] = elapsed
         return str(data["data"]["code"])
 
+    async def send_phone_code(self, phone: str) -> None:
+        resp = await self._client.post(
+            f"{AS_BASE}/general/v1/send_phone_code",
+            headers=self._base_headers(),
+            json={"phone": phone, "type": 2},
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != 0:
+            raise RuntimeError(data.get("msg") or data.get("message") or str(data))
+
+    async def get_token_by_phone_code(self, phone: str, code: str) -> str:
+        resp = await self._client.post(
+            f"{AS_BASE}/user/auth/v2/token_by_phone_code",
+            headers=self._base_headers(),
+            json={"phone": phone, "code": code},
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != 0:
+            raise SklandAuthError(data.get("msg") or data.get("message") or str(data))
+        return str(data["data"]["token"])
+
     async def get_credential(self, grant_code: str) -> Credential:
         started = time.time()
         resp = await self._client.post(

@@ -57,15 +57,15 @@ uv run python main.py
 
 ### 森空岛签到
 
-- `/skland_config add <鹰角token>`：\[root，私聊] 添加森空岛签到账号
+- `/skland_config add <鹰角token>`：\[私聊] 添加森空岛签到账号
   - 添加时会立即校验 token、读取绑定角色，并优先使用第一个明日方舟角色 `uid` 作为本地账号标识
   - 添加成功后会立刻尝试签到，并返回本次签到结果
-- `/skland_sms <手机号>`：\[root] 发送短信验证码；群内发起时，该账号后续通知目标为当前群
-- `/skland_sms_code <验证码>`：\[root] 提交短信验证码，登录成功后保存长期 token 并立即签到
-- `/skland_qr`：\[root] 二维码登录入口；当前暂不落库，详见命令提示
-- `/skland_sign [uid]`：\[root] 立即签到；不传 `uid` 时签到全部账号
+- `/skland_sms <手机号>`：发送短信验证码；群内发起时，该账号后续通知目标为当前群
+- `/skland_sms_code <验证码>`：提交短信验证码，登录成功后保存长期 token 并立即签到
+- `/skland_qr`：二维码登录入口；当前暂不落库，详见命令提示
+- `/skland_sign [uid]`：立即签到；不传 `uid` 时签到全部账号
 - `/skland_status`：\[root] 查看签到配置、账号 UID、上次定时日期
-- `/skland_config remove <uid>`：\[root] 删除账号
+- `/skland_config remove <uid>`：\[root/账号添加者] 删除账号
 - `/skland_config hour <0-23>`：\[root] 设置每日定时签到小时，分钟固定为 `01`
 - `/skland_config on|off`：\[root] 启用或禁用每日自动签到
 

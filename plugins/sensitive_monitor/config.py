@@ -14,3 +14,6 @@ class SensitiveGroupConfig:
     max_context_messages: int = 5
     # Maximum total characters for the appended context
     max_context_chars: int = 800
+    # Cooldown seconds: after a sensitive notification, suppress further
+    # notifications from this group for this duration to avoid cascade
+    notify_cooldown_seconds: int = 120

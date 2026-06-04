@@ -1,6 +1,7 @@
 """敏感消息监听插件"""
 
 import json
+import time
 
 from ncatbot.plugin_system import NcatBotPlugin, command_registry, param, on_message
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
@@ -15,6 +16,8 @@ RECENT_PROCESSED: set[str] = set()
 RECENT_SENSITIVE: set[str] = set()
 MAX_RECENT = 500
 MIN_TEXT_LENGTH = 4
+# Per-group cooldown: tracks the last notification time for each group
+LAST_NOTIFY_TIME: dict[str, float] = {}
 
 
 def _build_clean_message(message) -> str:
@@ -56,6 +59,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                         append_context=g.get("append_context", False),
                         max_context_messages=g.get("max_context_messages", 5),
                         max_context_chars=g.get("max_context_chars", 800),
+                        notify_cooldown_seconds=g.get("notify_cooldown_seconds", 120),
                     )
                     for gid, g in data.items()
                 }
@@ -74,6 +78,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                         "append_context": g.append_context,
                         "max_context_messages": g.max_context_messages,
                         "max_context_chars": g.max_context_chars,
+                        "notify_cooldown_seconds": g.notify_cooldown_seconds,
                     }
                     for gid, g in self.groups.items()
                 },
@@ -147,7 +152,18 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             logger.info(
                 f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}"
             )
-            await self._notify(cfg, group_id, str(event.user_id), text, reason, context)
+            # Cooldown check: suppress notification if we recently sent one in this group
+            now = time.time()
+            last = LAST_NOTIFY_TIME.get(group_id, 0)
+            if now - last < cfg.notify_cooldown_seconds:
+                logger.info(
+                    f"群 {group_id} 处于通知冷却中 (剩余 {int(cfg.notify_cooldown_seconds - (now - last))}s)，跳过通知"
+                )
+            else:
+                await self._notify(
+                    cfg, group_id, str(event.user_id), text, reason, context
+                )
+                LAST_NOTIFY_TIME[group_id] = time.time()
 
     async def _notify(
         self,
@@ -168,7 +184,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if cfg.append_context and context:
             truncated = context
             if len(context) > cfg.max_context_chars:
-                truncated = context[:cfg.max_context_chars].rstrip() + "..."
+                truncated = context[: cfg.max_context_chars].rstrip() + "..."
             msg += f"\n对话背景:\n{truncated}"
         for uid in cfg.notify_users:
             try:
@@ -271,9 +287,35 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             lines.append(f"  附加对话背景: {'是' if cfg.append_context else '否'}")
             lines.append(f"  对话消息数上限: {cfg.max_context_messages}")
             lines.append(f"  对话字符上限: {cfg.max_context_chars}")
+            lines.append(f"  通知冷却: {cfg.notify_cooldown_seconds}秒")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
         await event.reply("\n".join(lines))
+
+    @command_registry.command(
+        "sensitive_cooldown", description="[管理员] 设置通知冷却秒数"
+    )
+    @param(name="seconds", default="120", help="冷却秒数，设为0禁用冷却")
+    async def cmd_cooldown(self, event: GroupMessageEvent, seconds: str = "120"):
+        if not await self._is_group_admin(event.group_id, event.user_id):
+            await event.reply("需要群主或管理员权限")
+            return
+        try:
+            val = int(seconds)
+            if val < 0:
+                await event.reply("冷却秒数不能为负数")
+                return
+        except ValueError:
+            await event.reply("请输入有效的数字")
+            return
+        group_id = str(event.group_id)
+        cfg = self._get_cfg(group_id)
+        cfg.notify_cooldown_seconds = val
+        self._save_config()
+        if val == 0:
+            await event.reply("通知冷却已禁用")
+        else:
+            await event.reply(f"通知冷却已设置为 {val} 秒")
 
 
 __all__ = ["SensitiveMonitorPlugin"]

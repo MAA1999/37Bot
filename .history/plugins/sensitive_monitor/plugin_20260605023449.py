@@ -1,6 +1,5 @@
 """敏感消息监听插件"""
 
-import asyncio
 import json
 import time
 
@@ -119,19 +118,8 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             return
         RECENT_PROCESSED.add(str(event.message_id))
         if len(RECENT_PROCESSED) > MAX_RECENT:
-            # Sliding window: discard oldest half, but keep RECENT_SENSITIVE intact
-            # to prevent re-detection of already-flagged messages
-            keep_count = MAX_RECENT // 2
-            RECENT_PROCESSED = set(list(RECENT_PROCESSED)[-keep_count:])
-            # Prune stale notification cooldown entries
-            now = time.time()
-            stale_keys = [
-                gid
-                for gid, last in LAST_NOTIFY_TIME.items()
-                if now - last > 3600  # 1 hour stale
-            ]
-            for gid in stale_keys:
-                del LAST_NOTIFY_TIME[gid]
+            RECENT_PROCESSED.clear()
+            RECENT_SENSITIVE.clear()
 
         if not is_llm_configured():
             return
@@ -158,13 +146,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
-        try:
-            is_sensitive, reason = await asyncio.wait_for(
-                get_llm().judge_sensitive(text, context), timeout=15
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"LLM 敏感判断超时 (group={group_id})，跳过")
-            return
+        is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
             RECENT_SENSITIVE.add(str(event.message_id))
             logger.info(

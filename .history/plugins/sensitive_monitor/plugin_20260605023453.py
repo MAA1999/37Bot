@@ -1,6 +1,5 @@
 """敏感消息监听插件"""
 
-import asyncio
 import json
 import time
 
@@ -158,13 +157,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
-        try:
-            is_sensitive, reason = await asyncio.wait_for(
-                get_llm().judge_sensitive(text, context), timeout=15
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"LLM 敏感判断超时 (group={group_id})，跳过")
-            return
+        is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
             RECENT_SENSITIVE.add(str(event.message_id))
             logger.info(

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 import httpx
 from ncatbot.utils import get_log
@@ -270,9 +271,16 @@ class LLMClient:
             return is_sensitive, reason
         except json.JSONDecodeError:
             logger.warning(f"LLM 返回非 JSON，fallback 到旧规则: {reply[:100]}")
-            is_sensitive = reply.strip().startswith("是")
-            reason = reply.strip()
-            return is_sensitive, reason
+            cleaned = reply.strip()
+            # Match leading 「是」/「否」 anchored at start; handles brackets like（是）「否」
+            m = re.match(r'^\s*[「（(]?\s*([是否])\s*[」）)]?', cleaned)
+            if m:
+                is_sensitive = m.group(1) == "是"
+            else:
+                # Fallback: check first non-whitespace character
+                first_char = cleaned.lstrip()[:1] if cleaned else ""
+                is_sensitive = first_char == "是"
+            return is_sensitive, cleaned[:200]
 
     async def judge_question(self, project: str, message_text: str, context: str = "") -> bool:
         """判断消息是否在询问项目相关问题。返回 True/False。"""

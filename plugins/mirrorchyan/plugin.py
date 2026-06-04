@@ -5,6 +5,7 @@ import re
 import json
 from pathlib import Path
 from dataclasses import asdict
+from typing import Optional
 
 from ncatbot.plugin_system import NcatBotPlugin, command_registry, param
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
@@ -448,9 +449,9 @@ class MirrorChyanPlugin(NcatBotPlugin):
         event: GroupMessageEvent,
         rid: str,
         type: int = 1,
-        interval: int = None,
-        auto: bool = None,
-        channel: str = None,
+        interval: Optional[int] = None,
+        auto: Optional[bool] = None,
+        channel: Optional[str] = None,
     ):
         """更新配置 用法: /mirror_config <资源ID> [类型0/1] [检查间隔秒] [自动上传]"""
         if not await self._is_group_admin(event.group_id, event.user_id):

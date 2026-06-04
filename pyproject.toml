@@ -8,6 +8,7 @@ dependencies = [
     "ncatbot",
     "markdown",
     "playwright",
+    "psutil",
 ]
 
 [[tool.uv.index]]

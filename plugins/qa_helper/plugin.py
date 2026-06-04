@@ -353,8 +353,6 @@ class QaHelperPlugin(NcatBotPlugin):
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
-        import re
-
         # 1. 含问号直接放行（由 LLM 层做精判）
         if "？" in text or "?" in text:
             return True

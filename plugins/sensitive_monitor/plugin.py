@@ -1,6 +1,8 @@
 """敏感消息监听插件"""
 
+import asyncio
 import json
+import time
 
 from ncatbot.plugin_system import NcatBotPlugin, command_registry, param, on_message
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
@@ -15,23 +17,10 @@ RECENT_PROCESSED: set[str] = set()
 RECENT_SENSITIVE: set[str] = set()
 MAX_RECENT = 500
 MIN_TEXT_LENGTH = 4
-
-
-def _build_clean_message(message) -> str:
-    """Convert a MessageArray to clean text, replacing non-text segments with summaries."""
-    parts = []
-    for seg in message:
-        if seg.msg_seg_type == "text":
-            parts.append(seg.text)
-        elif seg.msg_seg_type == "at":
-            parts.append(f"@{seg.qq}" if seg.qq != "all" else "@全体成员")
-        elif seg.msg_seg_type == "reply":
-            continue
-        else:
-            summary = seg.get_summary()
-            if summary and summary != "该消息不支持预览":
-                parts.append(summary)
-    return "".join(parts)
+# Per-group cooldown: tracks the last notification time for each group
+LAST_NOTIFY_TIME: dict[str, float] = {}
+# Prune LAST_NOTIFY_TIME entries older than this (seconds)
+NOTIFY_COOLDOWN_PRUNE_AGE = 3600  # 1 hour
 
 
 class SensitiveMonitorPlugin(NcatBotPlugin):
@@ -56,6 +45,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                         append_context=g.get("append_context", False),
                         max_context_messages=g.get("max_context_messages", 5),
                         max_context_chars=g.get("max_context_chars", 800),
+                        notify_cooldown_seconds=g.get("notify_cooldown_seconds", 120),
                     )
                     for gid, g in data.items()
                 }
@@ -74,6 +64,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                         "append_context": g.append_context,
                         "max_context_messages": g.max_context_messages,
                         "max_context_chars": g.max_context_chars,
+                        "notify_cooldown_seconds": g.notify_cooldown_seconds,
                     }
                     for gid, g in self.groups.items()
                 },
@@ -113,8 +104,19 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             return
         RECENT_PROCESSED.add(str(event.message_id))
         if len(RECENT_PROCESSED) > MAX_RECENT:
-            RECENT_PROCESSED.clear()
-            RECENT_SENSITIVE.clear()
+            # Sliding window: discard oldest half, but keep RECENT_SENSITIVE intact
+            # to prevent re-detection of already-flagged messages
+            keep_count = MAX_RECENT // 2
+            RECENT_PROCESSED = set(list(RECENT_PROCESSED)[-keep_count:])
+            # Prune stale notification cooldown entries
+            now = time.time()
+            stale_keys = [
+                gid
+                for gid, last in LAST_NOTIFY_TIME.items()
+                if now - last > NOTIFY_COOLDOWN_PRUNE_AGE
+            ]
+            for gid in stale_keys:
+                del LAST_NOTIFY_TIME[gid]
 
         if not is_llm_configured():
             return
@@ -141,13 +143,30 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
-        is_sensitive, reason = await get_llm().judge_sensitive(text, context)
+        try:
+            is_sensitive, reason = await asyncio.wait_for(
+                get_llm().judge_sensitive(text, context), timeout=15
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM 敏感判断超时 (group={group_id})，跳过")
+            return
         if is_sensitive:
             RECENT_SENSITIVE.add(str(event.message_id))
             logger.info(
                 f"敏感消息: group={group_id}, user={event.user_id}, reason={reason}"
             )
-            await self._notify(cfg, group_id, str(event.user_id), text, reason, context)
+            # Cooldown check: suppress notification if we recently sent one in this group
+            now = time.time()
+            last = LAST_NOTIFY_TIME.get(group_id, 0)
+            if now - last < cfg.notify_cooldown_seconds:
+                logger.info(
+                    f"群 {group_id} 处于通知冷却中 (剩余 {int(cfg.notify_cooldown_seconds - (now - last))}s)，跳过通知"
+                )
+            else:
+                await self._notify(
+                    cfg, group_id, str(event.user_id), text, reason, context
+                )
+                LAST_NOTIFY_TIME[group_id] = time.time()
 
     async def _notify(
         self,
@@ -271,9 +290,35 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             lines.append(f"  附加对话背景: {'是' if cfg.append_context else '否'}")
             lines.append(f"  对话消息数上限: {cfg.max_context_messages}")
             lines.append(f"  对话字符上限: {cfg.max_context_chars}")
+            lines.append(f"  通知冷却: {cfg.notify_cooldown_seconds}秒")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
         await event.reply("\n".join(lines))
+
+    @command_registry.command(
+        "sensitive_cooldown", description="[管理员] 设置通知冷却秒数"
+    )
+    @param(name="seconds", default="120", help="冷却秒数，设为0禁用冷却")
+    async def cmd_cooldown(self, event: GroupMessageEvent, seconds: str = "120"):
+        if not await self._is_group_admin(event.group_id, event.user_id):
+            await event.reply("需要群主或管理员权限")
+            return
+        try:
+            val = int(seconds)
+            if val < 0:
+                await event.reply("冷却秒数不能为负数")
+                return
+        except ValueError:
+            await event.reply("请输入有效的数字")
+            return
+        group_id = str(event.group_id)
+        cfg = self._get_cfg(group_id)
+        cfg.notify_cooldown_seconds = val
+        self._save_config()
+        if val == 0:
+            await event.reply("通知冷却已禁用")
+        else:
+            await event.reply(f"通知冷却已设置为 {val} 秒")
 
 
 __all__ = ["SensitiveMonitorPlugin"]

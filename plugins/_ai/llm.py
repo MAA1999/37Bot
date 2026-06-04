@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 import httpx
 from ncatbot.utils import get_log
@@ -242,7 +243,7 @@ class LLMClient:
         )
         user_prompt = f"请判断以下 QQ 群消息是否包含政治敏感内容：\n\n消息内容：\n{message_text}"
         if context:
-            user_prompt += f"\n\n群聊上下文（其他群友的反应）：\n{context}"
+            user_prompt += f"\n\n群聊上下文（此消息之前的对话历史）：\n{context}"
         user_prompt += "\n\n请先回答「是」或「否」，然后简要说明理由（不超过30字）。"
 
         messages = [
@@ -254,9 +255,16 @@ class LLMClient:
         if reply is None:
             return False, "LLM 请求失败"
 
-        is_sensitive = reply.strip().startswith("是")
-        reason = reply.strip()
-        return is_sensitive, reason
+        cleaned = reply.strip()
+        # Match the first 「是」/「否」 or bare 是/否 at the start
+        m = re.search(r'[「（(]?\s*([是否])\s*[」）)]?', cleaned)
+        if m:
+            is_sensitive = m.group(1) == "是"
+        else:
+            # Fallback: check first non-whitespace character
+            first_char = cleaned.lstrip()[:1] if cleaned else ""
+            is_sensitive = first_char == "是"
+        return is_sensitive, cleaned[:200]
 
     async def judge_question(self, project: str, message_text: str, context: str = "") -> bool:
         """判断消息是否在询问项目相关问题。返回 True/False。"""

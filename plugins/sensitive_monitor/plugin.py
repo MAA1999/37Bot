@@ -129,19 +129,17 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             # Fetch more than needed to account for filtered-out messages
             fetch_count = max(cfg.max_context_messages, 10) + 10
             recent = await self.api.get_group_msg_history(group_id, count=fetch_count)
-            prev = [
-                m
-                for m in recent
-                if m.time < event.time
-                and m.message_id != event.message_id
-                and str(m.message_id) not in RECENT_SENSITIVE
-            ]
+            # Collect messages before current, replacing sensitive ones with placeholder
+            prev = [m for m in recent if m.time < event.time and m.message_id != event.message_id]
             if prev:
                 lines = []
                 for m in reversed(prev[-cfg.max_context_messages :]):
-                    msg_text = _build_clean_message(m.message)
-                    if msg_text:
-                        lines.append(f"[{m.user_id}]: {msg_text}")
+                    if str(m.message_id) in RECENT_SENSITIVE:
+                        lines.append("[敏感内容已过滤]")
+                    else:
+                        msg_text = _build_clean_message(m.message)
+                        if msg_text:
+                            lines.append(f"[{m.user_id}]: {msg_text}")
                 context = "\n".join(lines)
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")

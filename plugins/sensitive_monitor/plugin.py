@@ -19,23 +19,8 @@ MAX_RECENT = 500
 MIN_TEXT_LENGTH = 4
 # Per-group cooldown: tracks the last notification time for each group
 LAST_NOTIFY_TIME: dict[str, float] = {}
-
-
-def _build_clean_message(message) -> str:
-    """Convert a MessageArray to clean text, replacing non-text segments with summaries."""
-    parts = []
-    for seg in message:
-        if seg.msg_seg_type == "text":
-            parts.append(seg.text)
-        elif seg.msg_seg_type == "at":
-            parts.append(f"@{seg.qq}" if seg.qq != "all" else "@全体成员")
-        elif seg.msg_seg_type == "reply":
-            continue
-        else:
-            summary = seg.get_summary()
-            if summary and summary != "该消息不支持预览":
-                parts.append(summary)
-    return "".join(parts)
+# Prune LAST_NOTIFY_TIME entries older than this (seconds)
+NOTIFY_COOLDOWN_PRUNE_AGE = 3600  # 1 hour
 
 
 class SensitiveMonitorPlugin(NcatBotPlugin):
@@ -128,7 +113,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             stale_keys = [
                 gid
                 for gid, last in LAST_NOTIFY_TIME.items()
-                if now - last > 3600  # 1 hour stale
+                if now - last > NOTIFY_COOLDOWN_PRUNE_AGE
             ]
             for gid in stale_keys:
                 del LAST_NOTIFY_TIME[gid]

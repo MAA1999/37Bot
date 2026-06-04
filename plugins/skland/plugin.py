@@ -174,7 +174,6 @@ class SklandPlugin(NcatBotPlugin):
         if error:
             lines.append(f"失败: {error}")
             return lines
-        assert results is not None
         if not results:
             lines.append("未找到绑定角色")
             return lines

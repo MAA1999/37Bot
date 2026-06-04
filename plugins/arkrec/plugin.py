@@ -22,6 +22,7 @@ from .config import GroupSubscription
 from .api import (
     fetch_bundle_ext,
     fetch_exclusive_operators,
+    fetch_menu,
     fetch_menu_tree,
     fetch_open_episodes,
     fetch_operation_info,

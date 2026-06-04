@@ -17,6 +17,23 @@ MAX_RECENT = 500
 MIN_TEXT_LENGTH = 4
 
 
+def _build_clean_message(message) -> str:
+    """Convert a MessageArray to clean text, replacing non-text segments with summaries."""
+    parts = []
+    for seg in message:
+        if seg.msg_seg_type == "text":
+            parts.append(seg.text)
+        elif seg.msg_seg_type == "at":
+            parts.append(f"@{seg.qq}" if seg.qq != "all" else "@全体成员")
+        elif seg.msg_seg_type == "reply":
+            continue
+        else:
+            summary = seg.get_summary()
+            if summary and summary != "该消息不支持预览":
+                parts.append(summary)
+    return "".join(parts)
+
+
 class SensitiveMonitorPlugin(NcatBotPlugin):
     name = "SensitiveMonitorPlugin"
     version = "1.0.0"
@@ -86,7 +103,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if not cfg or not cfg.enabled:
             return
 
-        text = (event.raw_message or "").strip()
+        text = event.message.concatenate_text().strip()
         if not text or text.startswith("/"):
             return
         if len(text) < MIN_TEXT_LENGTH:
@@ -104,10 +121,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
 
         context = ""
         try:
-            # Always fetch context for better LLM judgment accuracy
-            # append_context only controls whether it's included in notifications
-            count = cfg.max_context_messages + 10
-            recent = await self.api.get_group_msg_history(group_id, count=count)
+            # Fetch more than needed to account for filtered-out messages
+            fetch_count = max(cfg.max_context_messages, 10) + 10
+            recent = await self.api.get_group_msg_history(group_id, count=fetch_count)
             prev = [
                 m
                 for m in recent
@@ -116,24 +132,16 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
                 and str(m.message_id) not in RECENT_SENSITIVE
             ]
             if prev:
-                context_str = "\n".join(
-                    f"[{m.user_id}]: {m.raw_message}"
-                    for m in reversed(prev[-cfg.max_context_messages :])
-                )
-                # enforce max characters
-                if len(context_str) > cfg.max_context_chars:
-                    context = context_str[: cfg.max_context_chars].rstrip() + "..."
-                else:
-                    context = context_str
+                lines = []
+                for m in reversed(prev[-cfg.max_context_messages :]):
+                    msg_text = _build_clean_message(m.message)
+                    if msg_text:
+                        lines.append(f"[{m.user_id}]: {msg_text}")
+                context = "\n".join(lines)
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
 
-        try:
-            is_sensitive, reason = await get_llm().judge_sensitive(text, context)
-        except Exception as e:
-            logger.error(f"LLM judgment failed: {e}")
-            return  # Skip this message gracefully
-
+        is_sensitive, reason = await get_llm().judge_sensitive(text, context)
         if is_sensitive:
             RECENT_SENSITIVE.add(str(event.message_id))
             logger.info(
@@ -148,7 +156,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         user_id: str,
         text: str,
         reason: str,
-        context: str = "",
+        context: str,
     ):
         msg = (
             f"敏感消息提醒\n"
@@ -157,9 +165,11 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             f"内容: {text}\n"
             f"原因: {reason}"
         )
-        # Only include context when enabled for the group
         if cfg.append_context and context:
-            msg += f"\n对话背景:\n{context}"
+            truncated = context
+            if len(context) > cfg.max_context_chars:
+                truncated = context[:cfg.max_context_chars].rstrip() + "..."
+            msg += f"\n对话背景:\n{truncated}"
         for uid in cfg.notify_users:
             try:
                 await self.api.post_private_msg(uid, text=msg)
@@ -205,13 +215,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if not await self._is_group_admin(event.group_id, event.user_id):
             await event.reply("需要群主或管理员权限")
             return
-        action_lower = action.lower()
-        if action_lower not in {"on", "off"}:
-            await event.reply("参数无效，请使用 'on' 或 'off'")
-            return
         group_id = str(event.group_id)
         cfg = self._get_cfg(group_id)
-        cfg.enabled = action_lower == "on"
+        cfg.enabled = action.lower() == "on"
         self._save_config()
         await event.reply(f"敏感消息监听已{'启用' if cfg.enabled else '禁用'}")
 
@@ -225,10 +231,6 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             return
         if not qq:
             await event.reply("请指定 QQ 号")
-            return
-        # Validate QQ ID: numeric and reasonable length (5-11 digits typical for QQ)
-        if not qq.isdigit() or not (5 <= len(qq) <= 11):
-            await event.reply("QQ 号格式无效（应为 5-11 位数字）")
             return
         group_id = str(event.group_id)
         cfg = self._get_cfg(group_id)
@@ -247,13 +249,9 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if not await self._is_group_admin(event.group_id, event.user_id):
             await event.reply("需要群主或管理员权限")
             return
-        action_lower = action.lower()
-        if action_lower not in {"on", "off"}:
-            await event.reply("参数无效，请使用 'on' 或 'off'")
-            return
         group_id = str(event.group_id)
         cfg = self._get_cfg(group_id)
-        cfg.warn_in_group = action_lower == "on"
+        cfg.warn_in_group = action.lower() == "on"
         self._save_config()
         await event.reply(f"群内警告已{'启用' if cfg.warn_in_group else '禁用'}")
 

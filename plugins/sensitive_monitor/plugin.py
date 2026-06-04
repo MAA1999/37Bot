@@ -37,6 +37,23 @@ def _build_clean_message(message) -> str:
     return "".join(parts)
 
 
+def _build_clean_message(message) -> str:
+    """Convert a MessageArray to clean text, replacing non-text segments with summaries."""
+    parts = []
+    for seg in message:
+        if seg.msg_seg_type == "text":
+            parts.append(seg.text)
+        elif seg.msg_seg_type == "at":
+            parts.append(f"@{seg.qq}" if seg.qq != "all" else "@全体成员")
+        elif seg.msg_seg_type == "reply":
+            continue
+        else:
+            summary = seg.get_summary()
+            if summary and summary != "该消息不支持预览":
+                parts.append(summary)
+    return "".join(parts)
+
+
 class SensitiveMonitorPlugin(NcatBotPlugin):
     name = "SensitiveMonitorPlugin"
     version = "1.0.0"
@@ -129,17 +146,19 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             # Fetch more than needed to account for filtered-out messages
             fetch_count = max(cfg.max_context_messages, 10) + 10
             recent = await self.api.get_group_msg_history(group_id, count=fetch_count)
-            # Collect messages before current, replacing sensitive ones with placeholder
-            prev = [m for m in recent if m.time < event.time and m.message_id != event.message_id]
+            prev = [
+                m
+                for m in recent
+                if m.time < event.time
+                and m.message_id != event.message_id
+                and str(m.message_id) not in RECENT_SENSITIVE
+            ]
             if prev:
                 lines = []
                 for m in reversed(prev[-cfg.max_context_messages :]):
-                    if str(m.message_id) in RECENT_SENSITIVE:
-                        lines.append("[敏感内容已过滤]")
-                    else:
-                        msg_text = _build_clean_message(m.message)
-                        if msg_text:
-                            lines.append(f"[{m.user_id}]: {msg_text}")
+                    msg_text = _build_clean_message(m.message)
+                    if msg_text:
+                        lines.append(f"[{m.user_id}]: {msg_text}")
                 context = "\n".join(lines)
         except Exception as e:
             logger.error(f"获取消息上下文失败: {e}")
@@ -182,7 +201,7 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
         if cfg.append_context and context:
             truncated = context
             if len(context) > cfg.max_context_chars:
-                truncated = context[: cfg.max_context_chars].rstrip() + "..."
+                truncated = context[:cfg.max_context_chars].rstrip() + "..."
             msg += f"\n对话背景:\n{truncated}"
         for uid in cfg.notify_users:
             try:

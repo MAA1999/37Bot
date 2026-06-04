@@ -55,6 +55,29 @@ uv run python main.py
 - `/arkrec_status`：查看订阅状态和数据库统计
 - `/arkrec_config <email> <password>`：\[root，私聊] 配置账号
 
+### 森空岛签到
+
+- `/skland_config add <鹰角token>`：\[私聊] 添加森空岛签到账号
+  - 添加时会立即校验 token、读取绑定角色，并优先使用第一个明日方舟角色 `uid` 作为本地账号标识
+  - 添加成功后会立刻尝试签到，并返回本次签到结果
+- `/skland_sms <手机号>`：发送短信验证码；群内发起时，该账号后续通知目标为当前群
+- `/skland_sms_code <验证码>`：提交短信验证码，登录成功后保存长期 token 并立即签到
+- `/skland_qr`：二维码登录入口；当前暂不落库，详见命令提示
+- `/skland_sign [uid]`：立即签到；不传 `uid` 时签到全部账号
+- `/skland_status`：\[root] 查看签到配置、账号 UID、上次定时日期
+- `/skland_config remove <uid>`：\[root/账号添加者] 删除账号
+- `/skland_config hour <0-23>`：\[root] 设置每日定时签到小时，分钟固定为 `01`
+- `/skland_config on|off`：\[root] 启用或禁用每日自动签到
+
+说明：
+
+- 默认每日本机时区 `00:01` 对所有账号自动签到，当前会同时尝试明日方舟和终末地。
+- token 添加只允许私聊，签到结果会私聊添加者；短信登录可在群或私聊完成，签到结果会发回发起来源。
+- token、设备 ID、所属 QQ 用户等数据保存在插件工作目录的 `config.json`，不会写入主配置文件。
+- token 失效或换取森空岛 `cred` 失败时，只会在首次失败时提醒一次：群来源会在对应群内 at 添加者，私聊来源会私聊添加者；后续签到恢复成功会自动清除提醒状态。
+- 日志会记录 `uid`、所属 QQ、token 指纹、设备 ID、接口阶段、角色签到结果和耗时，便于排查；不会记录明文 token。
+- 森空岛 API 签名算法参考了 [YueHen14/skyland-auto-sign](https://github.com/YueHen14/skyland-auto-sign) 和 [UKMeng/nonebot-plugin-skland-arksign](https://github.com/UKMeng/nonebot-plugin-skland-arksign)。
+
 ### 群聊总结
 
 - `/summary [消息数|today|YYYY-MM-DD]`：生成群聊总结
@@ -104,6 +127,7 @@ uv run python main.py
 │   ├── mirrorchyan/
 │   ├── qa_helper/
 │   ├── sensitive_monitor/
+│   ├── skland/
 │   ├── status/
 │   └── todo/
 ├── 37bot.service

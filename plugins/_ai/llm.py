@@ -91,7 +91,7 @@ async def _health_probe_loop(get_client_fn):
 
 
 class LLMClient:
-    def __init__(self, base_url: str, api_key: str, model: str, backups: list[dict] = None):
+    def __init__(self, base_url: str, api_key: str, model: str, backups: list[dict] | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -240,46 +240,88 @@ class LLMClient:
             "注意区分正常政治讨论和恶意敏感言论。"
             "正常讨论（如聊政策影响、社会现象）不应判定为敏感。"
             "只有明显包含极端敏感词、反政府言论、分裂主义宣传等内容才判定为敏感。"
+            "\n\n"
+            "你必须严格输出 JSON，不要有任何额外文字：\n"
+            '{"sensitive": false, "reason": "简要理由"}\n\n'
+            "判断示例：\n"
+            '- "最近物价涨得好厉害啊" → {"sensitive": false, "reason": "正常社会现象讨论"}\n'
+            '- "我觉得这个政策方向不太对" → {"sensitive": false, "reason": "正常政策讨论"}\n'
+            '- "今天开会说要好好干活" → {"sensitive": false, "reason": "日常闲聊"}\n'
+            "- 若消息明确包含极端政治攻击、分裂主义口号、或反政府煽动言论 → "
+            '{"sensitive": true, "reason": "简述具体敏感类型"}'
         )
-        user_prompt = f"请判断以下 QQ 群消息是否包含政治敏感内容：\n\n消息内容：\n{message_text}"
+        user_prompt = f"请判断以下 QQ 群消息是否包含政治敏感内容：\n\n{message_text}"
         if context:
-            user_prompt += f"\n\n群聊上下文（此消息之前的对话历史）：\n{context}"
-        user_prompt += "\n\n请先回答「是」或「否」，然后简要说明理由（不超过30字）。"
+            user_prompt += f"\n\n群聊上下文（用于辅助判断语境，不代表上下文本身违规）：\n{context}"
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        reply = await self.chat(messages, temperature=0.1, max_tokens=100)
+        reply = await self.chat(messages, temperature=0.1, max_tokens=150, stream=False)
         if reply is None:
+            logger.warning("LLM 请求失败，本轮敏感监测跳过")
             return False, "LLM 请求失败"
 
-        cleaned = reply.strip()
-        # Match the leading 「是」/「否」 (anchored at the start); ignore later occurrences
-        m = re.match(r'^\s*[「（(]?\s*([是否])\s*[」）)]?', cleaned)
-        if m:
-            is_sensitive = m.group(1) == "是"
-        else:
-            # Fallback: check first non-whitespace character
-            first_char = cleaned.lstrip()[:1] if cleaned else ""
-            is_sensitive = first_char == "是"
-        return is_sensitive, cleaned[:200]
+        try:
+            data = json.loads(reply.strip())
+            is_sensitive = bool(data.get("sensitive", False))
+            reason = str(data.get("reason", ""))
+            return is_sensitive, reason
+        except json.JSONDecodeError:
+            logger.warning(f"LLM 返回非 JSON，fallback 到旧规则: {reply[:100]}")
+            is_sensitive = reply.strip().startswith("是")
+            reason = reply.strip()
+            return is_sensitive, reason
 
     async def judge_question(self, project: str, message_text: str, context: str = "") -> bool:
         """判断消息是否在询问项目相关问题。返回 True/False。"""
         system_prompt = (
-            "你是一个消息分类助手。你的任务是判断一条 QQ 群消息是否在询问关于特定项目的问题。"
-            "只有明确在询问、求助、咨询项目相关问题时才回答「是」。"
-            "纯粹的闲聊、感叹、分享、晒图，即使提到项目名，也不算提问。"
+            "你是一个消息分类助手。判断一条QQ群消息是否在【主动提问/求助】关于特定项目的问题。\n\n"
+            "## 判断标准\n\n"
+            "回答「是」的条件（必须同时满足）：\n"
+            "1. 消息是一个独立发起的、明确的提问或求助（而非回复/接话）\n"
+            "2. 问的内容与该项目相关（用法、报错、配置、功能、兼容性、安装、部署、API、插件等）\n"
+            "3. 消息发送者确实期望得到帮助或答案\n\n"
+            "回答「否」的条件（任一满足即否）：\n"
+            "- 纯闲聊、感叹、吐槽（如\"这项目真好用\"、\"牛逼\"、\"666\"）\n"
+            "- 分享、晒图、通知、公告、推荐\n"
+            "- 虽含问号但实为反问/感叹（如\"这也太强了吧？\"、\"真的假的？\"、\"不是吧？\"）\n"
+            "- 问的是与项目完全无关的事（日常聊天、天气、游戏、吃啥等）\n"
+            "- 回复/接话别人的内容，而非独立发起提问\n"
+            "- 纯表情包、图片、链接分享（无实质提问文字）\n"
+            "- 自问自答、自言自语\n"
+            "- 已经解决的问题（如\"搞定了\"、\"好了没问题了\"）\n"
+            "- 在描述自己做了什么（陈述），而不是寻求帮助\n"
+            "- 含疑问词但语义是日常闲聊（如\"吃啥\"、\"干嘛呢\"、\"谁来打游戏\"）\n\n"
+            "如果不确定，倾向于回答「否」（宁可漏答，不要误答）。\n\n"
+            "## 示例\n\n"
+            "消息: \"这个项目怎么安装？\" → 是\n"
+            "消息: \"为什么启动报错 ModuleNotFoundError？\" → 是\n"
+            "消息: \"支持Python3.12吗\" → 是\n"
+            "消息: \"插件怎么加载不出来\" → 是\n"
+            "消息: \"有没有docker部署教程\" → 是\n"
+            "消息: \"配置文件放哪个目录\" → 是\n"
+            "消息: \"这功能不错啊\" → 否\n"
+            "消息: \"真的假的？\" → 否\n"
+            "消息: \"有没有人一起打游戏\" → 否\n"
+            "消息: \"哈哈哈笑死\" → 否\n"
+            "消息: \"我推荐大家用这个\" → 否\n"
+            "消息: \"帮我点个赞\" → 否\n"
+            "消息: \"说啥呢\" → 否\n"
+            "消息: \"什么都行随便\" → 否\n"
+            "消息: \"已经搞定了\" → 否\n"
+            "消息: \"应该是吧\" → 否\n\n"
+            "只回答「是」或「否」，不要解释。"
         )
         user_prompt = (
             f"项目名：{project}\n\n"
             f"消息内容：\n{message_text}"
         )
         if context:
-            user_prompt += f"\n\n群聊上下文：\n{context}"
-        user_prompt += "\n\n这条消息是否在询问关于上述项目的问题？只回答「是」或「否」。"
+            user_prompt += f"\n\n群聊上下文（仅供参考，用于理解消息语境）：\n{context}"
+        user_prompt += "\n\n判断："
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -290,7 +332,9 @@ class LLMClient:
         if reply is None:
             return False
 
-        return reply.strip().startswith("是")
+        # 严格匹配：只有回复以「是」开头才算通过
+        answer = reply.strip()
+        return answer.startswith("是")
 
     async def answer_question(self, question: str, system_prompt: str, context: str = "") -> str | None:
         """回答项目相关问题。"""

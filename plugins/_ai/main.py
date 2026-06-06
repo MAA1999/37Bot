@@ -1,5 +1,7 @@
 import asyncio
+import json
 import time
+from pathlib import Path
 
 from ncatbot.core.message import GroupMessage, PrivateMessage
 from ncatbot.plugin import CompatibleEnrollment, BasePlugin
@@ -25,6 +27,18 @@ class AiPlugin(BasePlugin):
         start_llm_health_probe()
         self.log.info("AI 插件已加载")
 
+    def _qa_enabled_for_group(self, group_id: str) -> bool:
+        """Q&A 启用群由 QaHelperPlugin 统一路由，避免双回复。"""
+        cfg_path = Path("data/QaHelperPlugin/config.json")
+        if not cfg_path.exists():
+            return False
+        try:
+            data = json.loads(cfg_path.read_text("utf-8"))
+            group_cfg = data.get(str(group_id), {})
+            return bool(group_cfg.get("enabled") and group_cfg.get("projects"))
+        except Exception:
+            return False
+
     # ---------- 群聊 ----------
 
     @bot.group_event()
@@ -35,6 +49,8 @@ class AiPlugin(BasePlugin):
         if not cfg.enabled:
             return
         if not is_llm_configured():
+            return
+        if self._qa_enabled_for_group(str(msg.group_id)):
             return
 
         # @机器人 → 直接回复

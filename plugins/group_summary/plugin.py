@@ -13,6 +13,7 @@ from ncatbot.utils import get_log
 from playwright.async_api import async_playwright
 
 from plugins._ai import get_llm, is_llm_configured
+from plugins._ai.message import clean_message_for_llm, clean_plain_text, has_image
 from .config import SummaryGroupConfig
 
 logger = get_log("Summary")
@@ -37,6 +38,8 @@ ISSUE_TRACK_PROMPT = (
     "| HH:MM | 昵称 | 问题简述 | 有/无（简述） |\n\n"
     "要求：只记录明确的问题报告，闲聊不算。"
 )
+
+SUMMARY_CHUNK_CHARS = 18000
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -161,6 +164,64 @@ class GroupSummaryPlugin(NcatBotPlugin):
 
     # ====== 核心 ======
 
+    @staticmethod
+    def _is_low_signal(text: str) -> bool:
+        text = text.strip()
+        if not text or text.startswith("/"):
+            return True
+        if re.fullmatch(r"(\[图片\]|\[CQ:[^\]]+\]|\s)+", text):
+            return True
+        return bool(re.fullmatch(
+            r"(哈{2,}|6{3,}|666+|牛[逼批]|nb|nice|ok+|嗯+|啊+|收到|了解|好的|可以|谢谢|感谢|顶|支持|笑死|确实|是的|对的)[。！!~～…\s]*",
+            text,
+            re.IGNORECASE,
+        ))
+
+    @staticmethod
+    def _chunk_lines(lines: list[str], max_chars: int = SUMMARY_CHUNK_CHARS) -> list[str]:
+        chunks = []
+        buf = []
+        size = 0
+        for line in lines:
+            line_size = len(line) + 1
+            if buf and size + line_size > max_chars:
+                chunks.append("\n".join(buf))
+                buf = []
+                size = 0
+            buf.append(line)
+            size += line_size
+        if buf:
+            chunks.append("\n".join(buf))
+        return chunks
+
+    async def _summarize_chat_text(self, system_prompt: str, chat_text: str, count: int) -> str | None:
+        chunks = self._chunk_lines(chat_text.splitlines())
+        llm = get_llm()
+        if len(chunks) == 1:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"请总结以下 {count} 条群聊消息：\n\n{chat_text}"},
+            ]
+            return await llm.chat(messages, profile="summary")
+
+        partials = []
+        partial_prompt = system_prompt + "\n\n当前是长聊天记录的一部分，请只提取本段的重要话题、结论和明确问题。"
+        for i, chunk in enumerate(chunks, 1):
+            messages = [
+                {"role": "system", "content": partial_prompt},
+                {"role": "user", "content": f"这是第 {i}/{len(chunks)} 段聊天记录：\n\n{chunk}"},
+            ]
+            part = await llm.chat(messages, profile="summary", max_tokens=1200)
+            if part:
+                partials.append(f"### 分段 {i}\n{part}")
+        if not partials:
+            return None
+        final_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "请合并以下分段摘要，去重后输出最终群聊总结：\n\n" + "\n\n".join(partials)},
+        ]
+        return await llm.chat(final_messages, profile="summary")
+
     async def _do_summary(self, group_id: str, cfg: SummaryGroupConfig,
                           date_filter: str = "") -> str | None:
         """生成总结。date_filter = 'YYYY-MM-DD' 时只取当天消息。"""
@@ -205,11 +266,21 @@ class GroupSummaryPlugin(NcatBotPlugin):
         lines = []
         for m in reversed(recent):
             name = await self._resolve_user_name(group_id, str(m.user_id))
-            # 清洗 CQ 码（图片、语音、文件等），只留纯文本
-            text = re.sub(r"\[CQ:[^\]]+\]", "", str(m.raw_message or "")).strip()
-            if not text:
+            plain = clean_plain_text(m.message)
+            message_has_image = has_image(m.message)
+            if self._is_low_signal(plain) and not message_has_image:
+                continue
+            text = await clean_message_for_llm(
+                m.message,
+                analyze_images=True,
+                image_hint=plain,
+                tmp_dir=self.data_dir / "vision_tmp",
+            )
+            if not text or self._is_low_signal(text):
                 continue
             lines.append(f"[{m.time}] [{name}]: {text}")
+        if not lines:
+            return None
         chat_text = "\n".join(lines)
 
         system_prompt = SUMMARY_SYSTEM
@@ -222,13 +293,7 @@ class GroupSummaryPlugin(NcatBotPlugin):
             else:
                 system_prompt += ISSUE_TRACK_PROMPT
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"请总结以下 {len(recent)} 条群聊消息：\n\n{chat_text}"},
-        ]
-
-        reply = await get_llm().chat(messages, temperature=0.3, max_tokens=2000, timeout=300)
-        return reply
+        return await self._summarize_chat_text(system_prompt, chat_text, len(lines))
 
     async def _render_to_image(self, md_text: str, group_id: str) -> Path | None:
         """Markdown 转 PNG 图片"""

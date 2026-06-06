@@ -17,6 +17,14 @@ UNHEALTHY_THRESHOLD = 5      # 连续失败 N 次标记不健康
 COOLDOWN_SECONDS = 300        # 不健康模型 5 分钟后重试
 PROBE_INTERVAL = 300          # 探测间隔 5 分钟
 
+PROFILE_DEFAULTS = {
+    "classify": {"temperature": 0.0, "max_tokens": 200, "stream": False, "timeout": 20},
+    "answer": {"temperature": 0.3, "max_tokens": 1000, "stream": False, "timeout": 45},
+    "summary": {"temperature": 0.3, "max_tokens": 2000, "stream": False, "timeout": 300},
+    "vision": {"temperature": 0.1, "max_tokens": 300, "stream": False, "timeout": 60},
+    "health": {"temperature": 0.0, "max_tokens": 5, "stream": False, "timeout": 15},
+}
+
 _health: dict[str, dict] = {}  # key="url|model" → {failures, last_fail}
 _probe_started = False
 
@@ -59,7 +67,7 @@ def get_health_status() -> dict:
     }
 
 
-async def start_health_probe(get_client_fn):
+def start_health_probe(get_client_fn):
     """启动周期探测（幂等，仅首次调用生效）。get_client_fn 返回 LLMClient。"""
     global _probe_started
     if _probe_started:
@@ -73,7 +81,7 @@ async def _health_probe_loop(get_client_fn):
     while True:
         await asyncio.sleep(PROBE_INTERVAL)
         client = get_client_fn()
-        for label, base_url, api_key, model in client._model_cfgs():
+        for label, base_url, api_key, model in client._model_cfgs(include_unhealthy=True):
             if _is_healthy(base_url, model):
                 continue  # 健康的不用探测
             logger.info(f"健康探测: {label} {model}")
@@ -100,17 +108,20 @@ class LLMClient:
     def configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.model)
 
-    def _model_cfgs(self):
+    def _model_cfgs(self, include_unhealthy: bool = False):
         """生成器：主模型 + 备用模型依次产出 (label, base_url, api_key, model)，跳过不健康的"""
-        if _is_healthy(self.base_url, self.model):
+        if self.base_url and self.api_key and self.model and (include_unhealthy or _is_healthy(self.base_url, self.model)):
             yield "primary", self.base_url, self.api_key, self.model
-        else:
+        elif self.base_url and self.model:
             logger.info(f"跳过不健康主模型: {self.model}")
         for i, b in enumerate(self.backups):
-            bu = b["base_url"].rstrip("/")
-            bm = b["model"]
-            if _is_healthy(bu, bm):
-                yield f"backup-{i+1}", bu, b["api_key"], bm
+            bu = str(b.get("base_url", "")).rstrip("/")
+            bm = str(b.get("model", ""))
+            key = str(b.get("api_key", ""))
+            if not bu or not key or not bm:
+                continue
+            if include_unhealthy or _is_healthy(bu, bm):
+                yield f"backup-{i+1}", bu, key, bm
             else:
                 logger.info(f"跳过不健康备用 #{i+1}: {bm}")
         if not self.backups:
@@ -119,15 +130,22 @@ class LLMClient:
     async def chat(
         self,
         messages: list[dict],
-        temperature: float = 0.1,
-        max_tokens: int = 500,
-        stream: bool = True,
-        timeout: float = 30,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        stream: bool | None = None,
+        timeout: float | None = None,
+        profile: str = "answer",
     ) -> str | None:
         """发送聊天请求，返回回复文本。失败返回 None。"""
         if not self.configured:
             logger.error("LLM 未配置")
             return None
+
+        defaults = PROFILE_DEFAULTS.get(profile, PROFILE_DEFAULTS["answer"])
+        temperature = defaults["temperature"] if temperature is None else temperature
+        max_tokens = defaults["max_tokens"] if max_tokens is None else max_tokens
+        stream = defaults["stream"] if stream is None else stream
+        timeout = defaults["timeout"] if timeout is None else timeout
 
         async with _semaphore:
             cfgs = list(self._model_cfgs())
@@ -180,7 +198,7 @@ class LLMClient:
             "stream": stream,
         }
 
-        last_error = None
+        transient_error = False
         for attempt in range(3 if stream else 2):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
@@ -190,8 +208,8 @@ class LLMClient:
                         async with client.stream("POST", url, json=payload, headers=headers) as resp:
                             if resp.status_code != 200:
                                 status = resp.status_code
-                                last_error = f"HTTP {status}"
-                                logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
+                                transient_error = status in (408, 409, 425, 429) or status >= 500
+                                logger.error(f"LLM 请求失败 (attempt {attempt + 1}): HTTP {status}")
                                 continue
                             async for line in resp.aiter_lines():
                                 if line.startswith("data: "):
@@ -209,70 +227,122 @@ class LLMClient:
                         if result:
                             return (result, False)
                         logger.warning(f"{model} HTTP 200 但无内容 (SSE行数={lines_received})")
-                        last_error = "EmptyResponse"
                         continue
                     else:
                         resp = await client.post(url, json=payload, headers=headers)
                         if resp.status_code != 200:
                             status = resp.status_code
-                            last_error = f"HTTP {status}: {resp.text[:200]}"
-                            logger.error(f"LLM 请求失败 (attempt {attempt + 1}): {last_error}")
+                            transient_error = status in (408, 409, 425, 429) or status >= 500
+                            logger.error(f"LLM 请求失败 (attempt {attempt + 1}): HTTP {status}: {resp.text[:200]}")
                             continue
                         data = resp.json()
                         content = data["choices"][0]["message"]["content"]
                         result = content.strip()
                         if result:
                             return (result, False)
-                        last_error = "EmptyResponse"
                         continue
             except Exception as e:
                 ename = type(e).__name__
-                last_error = f"{ename}: {e}"
-                logger.error(f"LLM 请求异常 ({model} attempt {attempt + 1}): {last_error}")
+                transient_error = True
+                logger.error(f"LLM 请求异常 ({model} attempt {attempt + 1}): {ename}: {e}")
 
-        return (None, False)
+        return (None, transient_error)
 
-    async def judge_sensitive(self, message_text: str, context: str = "") -> tuple[bool, str]:
+    async def analyze_image(self, image_url: str, hint: str = "") -> str | None:
+        """用 OpenAI 兼容多模态格式分析单张图片。"""
+        system_prompt = (
+            "你是图片内容分析助手。请客观描述图片中与聊天上下文有关的信息。"
+            "如果图片像截图，请优先提取可见文字、错误信息、界面状态和关键对象。"
+            "回答控制在 80 字以内，不要编造看不见的内容。"
+        )
+        text = "请简要分析这张图片。"
+        if hint:
+            text += f"\n聊天文字提示：{hint[:500]}"
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ]
+        return await self.chat(messages, profile="vision")
+
+    @staticmethod
+    def _load_json_reply(reply: str) -> dict | None:
+        text = reply.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return None
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+
+    async def judge_sensitive(
+        self,
+        message_text: str,
+        context: str = "",
+        min_confidence: float = 0.85,
+    ) -> tuple[bool, str]:
         """判断消息是否包含政治敏感内容。返回 (is_sensitive, reason)。"""
         system_prompt = (
-            "你是一个内容审核助手，负责判断 QQ 群消息是否包含政治敏感内容。"
-            "注意区分正常政治讨论和恶意敏感言论。"
-            "正常讨论（如聊政策影响、社会现象）不应判定为敏感。"
-            "只有明显包含极端敏感词、反政府言论、分裂主义宣传等内容才判定为敏感。"
+            "你是一个内容审核分类器，只判断【当前消息】是否包含政治敏感风险。"
+            "上下文只能用于消歧，绝不能作为当前消息违规证据。"
+            "正常政策讨论、社会现象讨论、提醒别人别说、引用前文做劝阻，均不应判定为敏感。"
+            "只有当前消息本身明确包含极端政治攻击、分裂主义宣传、反政府煽动等内容才判定为敏感。"
             "\n\n"
-            "你必须严格输出 JSON，不要有任何额外文字：\n"
-            '{"sensitive": false, "reason": "简要理由"}\n\n'
-            "判断示例：\n"
-            '- "最近物价涨得好厉害啊" → {"sensitive": false, "reason": "正常社会现象讨论"}\n'
-            '- "我觉得这个政策方向不太对" → {"sensitive": false, "reason": "正常政策讨论"}\n'
-            '- "今天开会说要好好干活" → {"sensitive": false, "reason": "日常闲聊"}\n'
-            "- 若消息明确包含极端政治攻击、分裂主义口号、或反政府煽动言论 → "
-            '{"sensitive": true, "reason": "简述具体敏感类型"}'
+            "必须严格输出 JSON，不要有任何额外文字：\n"
+            '{"sensitive": false, "confidence": 0.0, "category": "safe", '
+            '"evidence": "", "reason": "简要理由"}\n\n'
+            "如果 sensitive=true，evidence 必须逐字来自当前消息，不能来自上下文。"
         )
-        user_prompt = f"请判断以下 QQ 群消息是否包含政治敏感内容：\n\n{message_text}"
+        user_prompt = f"当前消息：\n{message_text}"
         if context:
-            user_prompt += f"\n\n群聊上下文（用于辅助判断语境，不代表上下文本身违规）：\n{context}"
+            user_prompt += f"\n\n群聊上下文（仅用于消歧，不可作为证据）：\n{context}"
+        user_prompt += "\n\n请输出 JSON："
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        reply = await self.chat(messages, temperature=0.1, max_tokens=150, stream=False)
+        reply = await self.chat(messages, profile="classify", max_tokens=220)
         if reply is None:
             logger.warning("LLM 请求失败，本轮敏感监测跳过")
             return False, "LLM 请求失败"
 
+        data = self._load_json_reply(reply)
+        if not data:
+            logger.warning(f"LLM 敏感判定返回非 JSON，按安全处理: {reply[:100]}")
+            return False, "LLM 返回非 JSON"
+
+        is_sensitive = bool(data.get("sensitive", False))
+        reason = str(data.get("reason", "")).strip() or "未给出原因"
+        evidence = str(data.get("evidence", "")).strip()
         try:
-            data = json.loads(reply.strip())
-            is_sensitive = bool(data.get("sensitive", False))
-            reason = str(data.get("reason", ""))
-            return is_sensitive, reason
-        except json.JSONDecodeError:
-            logger.warning(f"LLM 返回非 JSON，fallback 到旧规则: {reply[:100]}")
-            is_sensitive = reply.strip().startswith("是")
-            reason = reply.strip()
-            return is_sensitive, reason
+            confidence = float(data.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        if not is_sensitive:
+            return False, reason
+        if confidence < min_confidence:
+            logger.info(f"敏感判定低置信度，忽略: confidence={confidence}, reason={reason}")
+            return False, f"低置信度: {reason}"
+        if not evidence:
+            logger.info(f"敏感判定缺少 evidence，忽略: reason={reason}")
+            return False, f"缺少证据: {reason}"
+        if evidence not in message_text:
+            logger.info(f"敏感判定 evidence 不在当前消息中，忽略: evidence={evidence[:50]}")
+            return False, f"证据来自上下文或被改写: {reason}"
+        return True, reason
 
     async def judge_question(self, project: str, message_text: str, context: str = "") -> bool:
         """判断消息是否在询问项目相关问题。返回 True/False。"""
@@ -327,7 +397,7 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        reply = await self.chat(messages, temperature=0, max_tokens=10)
+        reply = await self.chat(messages, profile="classify", max_tokens=10)
         if reply is None:
             return False
 
@@ -349,4 +419,4 @@ class LLMClient:
             {"role": "user", "content": user_content},
         ]
 
-        return await self.chat(messages, temperature=0.3, max_tokens=1000)
+        return await self.chat(messages, profile="answer")

@@ -11,6 +11,8 @@ from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.utils import get_log, ncatbot_config
 
 from plugins._ai import get_llm, is_llm_configured, load_llm_config, save_llm_config, start_llm_health_probe, get_health_status
+from plugins._ai.message import clean_message_for_llm, clean_plain_text, extract_text_only, has_image
+from plugins._ai.utils import build_messages
 from .config import QAGroupConfig
 
 logger = get_log("QA")
@@ -110,6 +112,9 @@ class QaHelperPlugin(NcatBotPlugin):
                         enabled=g.get("enabled", False),
                         projects=projects,
                         system_prompt=g.get("system_prompt", ""),
+                        auto_answer=g.get("auto_answer", True),
+                        auto_min_confidence=float(g.get("auto_min_confidence", 0.72)),
+                        explicit_fallback_to_ai=g.get("explicit_fallback_to_ai", True),
                     )
                 return result
             except Exception:
@@ -124,6 +129,9 @@ class QaHelperPlugin(NcatBotPlugin):
                         "enabled": g.enabled,
                         "projects": g.projects,
                         "system_prompt": g.system_prompt,
+                        "auto_answer": g.auto_answer,
+                        "auto_min_confidence": g.auto_min_confidence,
+                        "explicit_fallback_to_ai": g.explicit_fallback_to_ai,
                     }
                     for gid, g in self.groups.items()
                 },
@@ -184,7 +192,7 @@ class QaHelperPlugin(NcatBotPlugin):
 
     # ====== 提示词 ======
 
-    def _get_system_prompt(self, cfg: QAGroupConfig) -> str:
+    def _get_system_prompt(self, cfg: QAGroupConfig, question: str = "") -> str:
         if cfg.system_prompt:
             return cfg.system_prompt
         parts = []
@@ -192,19 +200,86 @@ class QaHelperPlugin(NcatBotPlugin):
             cache_path = self.workspace / f"cache_{p.lower()}.txt"
             if cache_path.exists():
                 try:
-                    parts.append(cache_path.read_text("utf-8").strip())
+                    content = cache_path.read_text("utf-8").strip()
+                    selected = self._select_relevant_doc_text(p, content, question)
+                    if selected:
+                        parts.append(f"## {p.upper()} 参考\n\n{selected}")
                 except Exception:
                     pass
         if not parts:
             return ""
 
-        result = parts[0]
-        for i, p in enumerate(cfg.projects[1:], 1):
-            if i >= len(parts):
+        docs = "\n\n=====\n\n".join(parts)
+        return (
+            "你是项目知识库助手。请只根据参考资料和当前问题作答。"
+            "回答要简洁可靠；资料不足时直接说明不知道，并告诉用户需要补充哪些日志、截图或配置。"
+            "不要编造版本、命令或链接。\n\n"
+            f"{docs}"
+        )
+
+    def _select_relevant_doc_text(self, project: str, text: str, question: str) -> str:
+        content = self._strip_identity_header(text)
+        chunks = self._split_doc_chunks(content)
+        if not chunks:
+            return content[:12000]
+        terms = self._query_terms(f"{project} {question}")
+        scored = []
+        for i, chunk in enumerate(chunks):
+            low = chunk.lower()
+            score = sum(low.count(term) for term in terms)
+            if project.lower() in low:
+                score += 2
+            scored.append((score, i, chunk))
+        selected = [chunk for score, _, chunk in sorted(scored, key=lambda x: (-x[0], x[1])) if score > 0][:8]
+        if not selected:
+            selected = chunks[:4]
+        result = []
+        total = 0
+        for chunk in selected:
+            if total + len(chunk) > 12000:
                 break
-            content = self._strip_identity_header(parts[i])
-            result += f"\n\n=====\n\n## {p.upper()} 参考\n\n{content}"
-        return result
+            result.append(chunk)
+            total += len(chunk)
+        return "\n\n---\n\n".join(result)
+
+    @staticmethod
+    def _split_doc_chunks(text: str) -> list[str]:
+        sections = [s.strip() for s in re.split(r"(?m)(?=^#{1,4}\s+)", text) if s.strip()]
+        if not sections:
+            sections = [text]
+        chunks = []
+        for section in sections:
+            if len(section) <= 1800:
+                chunks.append(section)
+                continue
+            buf = []
+            size = 0
+            for para in re.split(r"\n\s*\n", section):
+                para = para.strip()
+                if not para:
+                    continue
+                if size and size + len(para) > 1800:
+                    chunks.append("\n\n".join(buf))
+                    buf = []
+                    size = 0
+                buf.append(para)
+                size += len(para)
+            if buf:
+                chunks.append("\n\n".join(buf))
+        return chunks
+
+    @staticmethod
+    def _query_terms(text: str) -> set[str]:
+        low = text.lower()
+        terms = set(re.findall(r"[a-z0-9_.:/#-]{2,}", low))
+        for block in re.findall(r"[\u4e00-\u9fff]+", low):
+            if len(block) <= 4:
+                terms.add(block)
+                continue
+            for size in (2, 3, 4):
+                for i in range(len(block) - size + 1):
+                    terms.add(block[i : i + size])
+        return {t for t in terms if len(t) >= 2}
 
     @staticmethod
     def _strip_identity_header(text: str) -> str:
@@ -406,7 +481,7 @@ class QaHelperPlugin(NcatBotPlugin):
         if not cfg or not cfg.enabled:
             return
 
-        text = (event.raw_message or "").strip()
+        text = clean_plain_text(event.message)
         if not text or text.startswith("/"):
             return
 
@@ -435,54 +510,82 @@ class QaHelperPlugin(NcatBotPlugin):
                 lines = []
                 for m in reversed(prev[-3:]):
                     name = await self._resolve_user_name(group_id, str(m.user_id))
-                    lines.append(f"[{name}]: {m.raw_message}")
+                    msg_text = clean_plain_text(m.message)
+                    if msg_text:
+                        lines.append(f"[{name}]: {msg_text}")
                 ctx = "\n".join(lines)
         except Exception:
             pass
 
         sender_name = await self._resolve_user_name(group_id, str(event.user_id))
         question = self._clean_question(event)
+        message_has_image = has_image(event.message)
+        llm = get_llm()
+        project_names = "、".join(cfg.projects)
+        is_project_question = False
 
         if not is_at_bot:
             if has_at_others:
+                return
+            if not cfg.auto_answer:
                 return
             if not question or not self._looks_like_question(question):
                 return
             if not is_llm_configured():
                 return
-            if not await get_llm().judge_question("、".join(cfg.projects), question, ctx):
+            is_project_question = await llm.judge_question(project_names, question, ctx)
+            if not is_project_question:
                 return
             logger.info(
                 f"QA 触发（LLM判定）: group={group_id}, user={sender_name}, question={question[:100]}"
             )
+        else:
+            if not is_llm_configured():
+                await event.reply("LLM 尚未配置，请联系管理员。")
+                return
+            if question:
+                is_project_question = await llm.judge_question(project_names, question, ctx)
+            elif message_has_image:
+                is_project_question = True
 
-        if not question:
+        if not question and not message_has_image:
             await event.reply("请问具体问题是什么？")
             return
 
-        if not is_llm_configured():
-            await event.reply("LLM 尚未配置，请联系管理员。")
+        analyze_images = message_has_image and (is_at_bot or is_project_question)
+        question_for_answer = question
+        if analyze_images:
+            question_for_answer = await clean_message_for_llm(
+                event.message,
+                analyze_images=True,
+                image_hint=question,
+                tmp_dir=self.workspace / "vision_tmp",
+            )
+            question_for_answer = re.sub(rf"@?{re.escape(str(bot_qq))}", "", question_for_answer).strip()
+            if is_at_bot and not is_project_question and question_for_answer:
+                is_project_question = await llm.judge_question(project_names, question_for_answer, ctx)
+
+        if not is_project_question and is_at_bot and cfg.explicit_fallback_to_ai:
+            messages = build_messages(load_llm_config().ai_system_prompt, [], question_for_answer or question)
+            answer = await llm.chat(messages, profile="answer")
+            if answer:
+                await event.reply(answer)
+            else:
+                await event.reply("抱歉，暂时无法回答这个问题。")
+            return
+        if not is_project_question:
             return
 
-        full_question = f"提问者: {sender_name}\n{question}"
-        system_prompt = self._get_system_prompt(cfg)
-        answer = await get_llm().answer_question(full_question, system_prompt, ctx)
+        full_question = f"提问者: {sender_name}\n{question_for_answer or question}"
+        system_prompt = self._get_system_prompt(cfg, question_for_answer or question)
+        answer = await llm.answer_question(full_question, system_prompt, ctx)
         if answer:
             await event.reply(answer)
         else:
             await event.reply("抱歉，暂时无法回答这个问题。")
 
     def _clean_question(self, event: GroupMessageEvent) -> str:
-        parts = []
-        for seg in event.message:
-            seg_type = getattr(seg, "msg_seg_type", None)
-            if seg_type in ("text", "plain"):
-                t = getattr(seg, "text", "") or ""
-                if t:
-                    parts.append(t)
-        text = " ".join(parts).strip()
-        text = re.sub(r"^/\S+\s*", "", text)
-        return text.strip()
+        return extract_text_only(event.message)
 
     # ====== 管理命令 ======
 
@@ -526,6 +629,66 @@ class QaHelperPlugin(NcatBotPlugin):
         else:
             self._save_gh_token(token)
             await event.reply("GitHub Token 已更新")
+
+    @command_registry.command(
+        "llm_vision", description="[root] 配置多模态 LLM API（私聊，全局共享）"
+    )
+    async def cmd_vision_llm(
+        self, event: PrivateMessageEvent, base_url: str, api_key: str, model: str
+    ):
+        if event.message_type != "private":
+            await event.reply("请私聊使用此命令")
+            return
+        if not self.rbac_manager.user_has_role(str(event.user_id), "root"):
+            await event.reply("需要 root 权限")
+            return
+        cfg = load_llm_config()
+        cfg.vision_base_url = base_url.rstrip("/")
+        cfg.vision_api_key = api_key
+        cfg.vision_model = model
+        save_llm_config(cfg)
+        await event.reply(f"多模态 LLM 配置已更新: {model} @ {base_url}")
+
+    @command_registry.command("llm_vision_backup", description="[root] 管理备用多模态 LLM: add <url> <key> <model> / list / remove <N> / clear")
+    async def cmd_vision_backup(self, event: PrivateMessageEvent, action: str = "list",
+                                url: str = "", key: str = "", model: str = ""):
+        if event.message_type != "private":
+            await event.reply("请私聊使用此命令")
+            return
+        if not self.rbac_manager.user_has_role(str(event.user_id), "root"):
+            await event.reply("需要 root 权限")
+            return
+        cfg = load_llm_config()
+        a = action.lower()
+        if a == "add":
+            if not url or not key or not model:
+                await event.reply("用法: /llm_vision_backup add <base_url> <api_key> <model>")
+                return
+            cfg.vision_backups.append({"base_url": url.rstrip("/"), "api_key": key, "model": model})
+            save_llm_config(cfg)
+            await event.reply(f"备用多模态模型已添加 (#{len(cfg.vision_backups)}): {model}")
+        elif a == "list":
+            if not cfg.vision_backups:
+                await event.reply("无备用多模态模型")
+                return
+            lines = [f"主多模态模型: {cfg.vision_model} @ {cfg.vision_base_url}", "备用多模态模型:"]
+            for i, b in enumerate(cfg.vision_backups):
+                lines.append(f"  [{i+1}] {b['model']} @ {b['base_url']}")
+            await event.reply("\n".join(lines))
+        elif a == "remove":
+            try:
+                idx = int(url) - 1
+                removed = cfg.vision_backups.pop(idx)
+                save_llm_config(cfg)
+                await event.reply(f"已移除备用多模态模型: {removed['model']}")
+            except (ValueError, IndexError):
+                await event.reply("用法: /llm_vision_backup remove <序号>，用 list 查看序号")
+        elif a == "clear":
+            cfg.vision_backups = []
+            save_llm_config(cfg)
+            await event.reply("所有备用多模态模型已清除")
+        else:
+            await event.reply("支持: add / list / remove / clear")
 
     @command_registry.command("llm_backup", description="[root] 管理备用 LLM: add <url> <key> <model> / list / remove <N> / clear")
     async def cmd_backup(self, event: PrivateMessageEvent, action: str = "list",
@@ -661,6 +824,18 @@ class QaHelperPlugin(NcatBotPlugin):
                 results.append(f"{p} 失败")
         await event.reply("\n".join(results))
 
+    @command_registry.command("qa_auto", description="[管理员] 自动 Q&A on/off")
+    @param(name="action", default="on", help="on 或 off")
+    async def cmd_auto(self, event: GroupMessageEvent, action: str = "on"):
+        if not await self._is_group_admin(event.group_id, event.user_id):
+            await event.reply("需要群主或管理员权限")
+            return
+        group_id = str(event.group_id)
+        cfg = self._get_cfg(group_id)
+        cfg.auto_answer = action.lower() == "on"
+        self._save_config()
+        await event.reply(f"Q&A 自动回复已{'启用' if cfg.auto_answer else '禁用'}")
+
     @command_registry.command("qa_prompt", description="[管理员] 设置/清除自定义提示词")
     @param(name="prompt", default="", help="系统提示词，留空清除（回退到文档缓存）")
     async def cmd_prompt(self, event: GroupMessageEvent, prompt: str = ""):
@@ -694,6 +869,8 @@ class QaHelperPlugin(NcatBotPlugin):
         ]
         if cfg and cfg.enabled:
             lines.append(f"  项目: {', '.join(cfg.projects) if cfg.projects else '无'}")
+            lines.append(f"  自动回复: {'启用' if cfg.auto_answer else '禁用'}")
+            lines.append(f"  @bot 通用 AI fallback: {'启用' if cfg.explicit_fallback_to_ai else '禁用'}")
             if cfg.system_prompt:
                 lines.append(f"  提示词: 自定义 ({len(cfg.system_prompt)} 字符)")
             else:
@@ -709,6 +886,7 @@ class QaHelperPlugin(NcatBotPlugin):
                     lines.append(f"  文档缓存: 未抓取")
         llm_cfg = load_llm_config()
         lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
+        lines.append(f"多模态 LLM: {'已配置' if llm_cfg.vision_base_url else '未配置'}")
         lines.append(f"GitHub Token: {'已配置' if self._load_gh_token() else '未配置'}")
         await event.reply("\n".join(lines))
 

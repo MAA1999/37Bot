@@ -14,3 +14,7 @@ class SensitiveGroupConfig:
     max_context_messages: int = 5
     # Maximum total characters for the appended context
     max_context_chars: int = 800
+    review_mode: str = "balanced"
+    min_confidence: float = 0.85
+    notify_cooldown: int = 300
+    context_for_judge: bool = False

@@ -12,9 +12,25 @@ def get_llm() -> LLMClient:
     return client
 
 
+def get_vision_llm() -> LLMClient:
+    """返回多模态 LLMClient；未配置时返回未配置 client。"""
+    cfg = load_llm_config()
+    return LLMClient(
+        base_url=cfg.vision_base_url,
+        api_key=cfg.vision_api_key,
+        model=cfg.vision_model,
+        backups=cfg.vision_backups,
+    )
+
+
 def is_llm_configured() -> bool:
     cfg = load_llm_config()
     return bool(cfg.base_url and cfg.api_key and cfg.model)
+
+
+def is_vision_llm_configured() -> bool:
+    cfg = load_llm_config()
+    return bool(cfg.vision_base_url and cfg.vision_api_key and cfg.vision_model)
 
 
 def start_llm_health_probe():
@@ -23,4 +39,4 @@ def start_llm_health_probe():
 
 
 __all__ = ["LLMClient", "get_llm", "is_llm_configured", "load_llm_config", "save_llm_config",
-           "start_llm_health_probe", "get_health_status"]
+           "get_vision_llm", "is_vision_llm_configured", "start_llm_health_probe", "get_health_status"]

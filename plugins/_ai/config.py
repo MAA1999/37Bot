@@ -7,6 +7,26 @@ from pathlib import Path
 SHARED_CONFIG_PATH = Path("data/_ai/llm_config.json")
 
 
+def normalize_openai_base_url(base_url: str) -> str:
+    value = str(base_url or "").strip().rstrip("/")
+    chat_completions_suffix = "/chat/completions"
+    if value.lower().endswith(chat_completions_suffix):
+        value = value[: -len(chat_completions_suffix)].rstrip("/")
+    return value
+
+
+def _normalize_model_cfgs(backups: list[dict] | None) -> list[dict]:
+    normalized = []
+    for backup in backups or []:
+        if not isinstance(backup, dict):
+            continue
+        normalized.append({
+            **backup,
+            "base_url": normalize_openai_base_url(str(backup.get("base_url", ""))),
+        })
+    return normalized
+
+
 @dataclass
 class LLMConfig:
     base_url: str = ""
@@ -24,10 +44,10 @@ class LLMConfig:
     timeout: float = 30.0
 
     def __post_init__(self):
-        if self.backups is None:
-            self.backups = []
-        if self.vision_backups is None:
-            self.vision_backups = []
+        self.base_url = normalize_openai_base_url(self.base_url)
+        self.vision_base_url = normalize_openai_base_url(self.vision_base_url)
+        self.backups = _normalize_model_cfgs(self.backups)
+        self.vision_backups = _normalize_model_cfgs(self.vision_backups)
 
 
 def load_llm_config() -> LLMConfig:
@@ -56,6 +76,10 @@ def load_llm_config() -> LLMConfig:
 
 def save_llm_config(cfg: LLMConfig):
     SHARED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cfg.base_url = normalize_openai_base_url(cfg.base_url)
+    cfg.vision_base_url = normalize_openai_base_url(cfg.vision_base_url)
+    cfg.backups = _normalize_model_cfgs(cfg.backups)
+    cfg.vision_backups = _normalize_model_cfgs(cfg.vision_backups)
     SHARED_CONFIG_PATH.write_text(
         json.dumps({
             "base_url": cfg.base_url, "api_key": cfg.api_key, "model": cfg.model,

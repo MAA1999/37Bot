@@ -885,8 +885,13 @@ class QaHelperPlugin(NcatBotPlugin):
                 else:
                     lines.append(f"  文档缓存: 未抓取")
         llm_cfg = load_llm_config()
-        lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
-        lines.append(f"多模态 LLM: {'已配置' if llm_cfg.vision_base_url else '未配置'}")
+        llm_configured = bool(llm_cfg.base_url and llm_cfg.api_key and llm_cfg.model)
+        vision_configured = bool(
+            llm_cfg.vision_base_url and llm_cfg.vision_api_key and llm_cfg.vision_model
+        )
+        vision_status = "已配置" if vision_configured else ("复用主模型" if llm_configured else "未配置")
+        lines.append(f"LLM: {'已配置' if llm_configured else '未配置'}")
+        lines.append(f"多模态 LLM: {vision_status}")
         lines.append(f"GitHub Token: {'已配置' if self._load_gh_token() else '未配置'}")
         await event.reply("\n".join(lines))
 

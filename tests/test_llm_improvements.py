@@ -66,6 +66,9 @@ if "ncatbot.core.event" not in sys.modules:
 from plugins._ai.llm import LLMClient
 from plugins._ai.llm import get_health_status
 from plugins._ai.message import clean_plain_text, image_segment_to_url, local_image_to_data_url
+import plugins._ai as ai_shared
+import plugins._ai.config as ai_config
+from plugins._ai.config import normalize_openai_base_url
 from plugins.sensitive_monitor.config import SensitiveGroupConfig
 from plugins.sensitive_monitor.plugin import SensitiveMonitorPlugin
 
@@ -158,6 +161,84 @@ class LLMImprovementTests(unittest.TestCase):
         asyncio.run(llm.chat([{"role": "user", "content": "hi"}]))
         after = get_health_status()
         self.assertEqual(after.get("https://transient.example/v1|model"), before.get("https://transient.example/v1|model"))
+
+    def test_openai_base_url_normalizes_chat_completions_endpoint(self):
+        self.assertEqual(
+            normalize_openai_base_url("https://apihub.agnes-ai.com/v1/chat/completions/"),
+            "https://apihub.agnes-ai.com/v1",
+        )
+        llm = LLMClient(
+            "https://apihub.agnes-ai.com/v1/chat/completions",
+            "key",
+            "agnes-2.0-flash",
+        )
+        self.assertEqual(llm.base_url, "https://apihub.agnes-ai.com/v1")
+
+    def test_saved_config_normalizes_agnes_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = ai_config.SHARED_CONFIG_PATH
+            ai_config.SHARED_CONFIG_PATH = Path(tmp) / "llm_config.json"
+            try:
+                cfg = ai_config.LLMConfig(
+                    base_url="https://apihub.agnes-ai.com/v1/chat/completions",
+                    api_key="key",
+                    model="agnes-2.0-flash",
+                    backups=[
+                        {
+                            "base_url": "https://backup.example/v1/chat/completions",
+                            "api_key": "backup-key",
+                            "model": "backup-model",
+                        }
+                    ],
+                )
+                ai_config.save_llm_config(cfg)
+                loaded = ai_config.load_llm_config()
+                self.assertEqual(loaded.base_url, "https://apihub.agnes-ai.com/v1")
+                self.assertEqual(loaded.backups[0]["base_url"], "https://backup.example/v1")
+            finally:
+                ai_config.SHARED_CONFIG_PATH = old_path
+
+    def test_vision_llm_falls_back_to_primary_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = ai_config.SHARED_CONFIG_PATH
+            ai_config.SHARED_CONFIG_PATH = Path(tmp) / "llm_config.json"
+            try:
+                cfg = ai_config.LLMConfig(
+                    base_url="https://agnes.example/v1",
+                    api_key="key",
+                    model="agnes-2.0-flash",
+                )
+                ai_config.save_llm_config(cfg)
+
+                self.assertTrue(ai_shared.is_vision_llm_configured())
+                client = ai_shared.get_vision_llm()
+                self.assertEqual(client.base_url, "https://agnes.example/v1")
+                self.assertEqual(client.api_key, "key")
+                self.assertEqual(client.model, "agnes-2.0-flash")
+            finally:
+                ai_config.SHARED_CONFIG_PATH = old_path
+
+    def test_vision_llm_prefers_dedicated_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = ai_config.SHARED_CONFIG_PATH
+            ai_config.SHARED_CONFIG_PATH = Path(tmp) / "llm_config.json"
+            try:
+                cfg = ai_config.LLMConfig(
+                    base_url="https://text.example/v1",
+                    api_key="text-key",
+                    model="text-model",
+                    vision_base_url="https://vision.example/v1",
+                    vision_api_key="vision-key",
+                    vision_model="vision-model",
+                )
+                ai_config.save_llm_config(cfg)
+
+                client = ai_shared.get_vision_llm()
+                self.assertEqual(client.base_url, "https://vision.example/v1")
+                self.assertEqual(client.api_key, "vision-key")
+                self.assertEqual(client.model, "vision-model")
+            finally:
+                ai_config.SHARED_CONFIG_PATH = old_path
 
     def test_sensitive_context_not_built_when_unused(self):
         plugin = FakeSensitivePlugin()

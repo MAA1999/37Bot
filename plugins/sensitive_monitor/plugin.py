@@ -403,7 +403,8 @@ class SensitiveMonitorPlugin(NcatBotPlugin):
             lines.append(f"  判定阈值: {cfg.min_confidence:.2f}")
             lines.append(f"  判定上下文: {'是' if cfg.context_for_judge else '否'}")
         llm_cfg = load_llm_config()
-        lines.append(f"LLM: {'已配置' if llm_cfg.base_url else '未配置'}")
+        llm_configured = bool(llm_cfg.base_url and llm_cfg.api_key and llm_cfg.model)
+        lines.append(f"LLM: {'已配置' if llm_configured else '未配置'}")
         await event.reply("\n".join(lines))
 
 

@@ -5,6 +5,7 @@ import json
 import time
 import httpx
 from ncatbot.utils import get_log
+from .config import normalize_openai_base_url
 
 logger = get_log("AiMod")
 
@@ -99,7 +100,7 @@ async def _health_probe_loop(get_client_fn):
 
 class LLMClient:
     def __init__(self, base_url: str, api_key: str, model: str, backups: list[dict] | None = None):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = normalize_openai_base_url(base_url)
         self.api_key = api_key
         self.model = model
         self.backups = backups or []
@@ -115,7 +116,7 @@ class LLMClient:
         elif self.base_url and self.model:
             logger.info(f"跳过不健康主模型: {self.model}")
         for i, b in enumerate(self.backups):
-            bu = str(b.get("base_url", "")).rstrip("/")
+            bu = normalize_openai_base_url(str(b.get("base_url", "")))
             bm = str(b.get("model", ""))
             key = str(b.get("api_key", ""))
             if not bu or not key or not bm:

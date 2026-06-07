@@ -40,6 +40,22 @@ uv run python main.py
 - `/help <模块>`：显示模块命令
 - `/status`：查询服务器状态（CPU、内存、Swap、磁盘、运行时间）
 
+### LLM / Agnes
+
+- `/qa_llm <base_url> <api_key> <model>`：\[root，私聊] 配置全局 OpenAI 兼容 LLM。所有 LLM 插件共享这份配置。
+- `/sensitive_llm <base_url> <api_key> <model>`：\[root，私聊] 同样写入全局 LLM 配置，可任选其一使用。
+- `/llm_vision <base_url> <api_key> <model>`：\[root，私聊] 可选，配置单独的多模态模型。
+- `/llm_backup add <base_url> <api_key> <model>`：添加备用文本模型。
+- `/llm_vision_backup add <base_url> <api_key> <model>`：添加备用多模态模型。
+- `/llm_health`：查看主模型和备用模型健康状态。
+
+说明：
+
+- `base_url` 填 OpenAI 兼容接口前缀。如果官方文档给的是 `https://example.com/v1/chat/completions`，这里填 `https://example.com/v1`。
+- Agnes 2.0 Flash 这类全模态模型可以只用 `/qa_llm` 配一次；未单独配置 `/llm_vision` 时，图片分析会自动复用主模型。
+- 配置后会写入 `data/_ai/llm_config.json`，生效范围包括 AI 问答、Q&A 助手、群聊总结、敏感监测和图片分析。
+- Agnes-2.0-Flash 示例：`/qa_llm https://apihub.agnes-ai.com/v1 YOUR_API_KEY agnes-2.0-flash`。如果误填完整 endpoint `https://apihub.agnes-ai.com/v1/chat/completions`，程序会自动规范化为 `https://apihub.agnes-ai.com/v1`。
+
 ### ArkRec（明日方舟少人 Wiki）
 
 - `/arkrec [关卡] [分类] [干员]`：查询记录（默认常规队当前纪录）

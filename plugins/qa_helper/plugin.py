@@ -471,21 +471,7 @@ class QaHelperPlugin(NcatBotPlugin):
 
         return False
 
-    @on_message
-    async def _on_message(self, event):
-        if not isinstance(event, GroupMessageEvent):
-            return
-
-        group_id = str(event.group_id)
-        cfg = self.groups.get(group_id)
-        if not cfg or not cfg.enabled:
-            return
-
-        text = clean_plain_text(event.message)
-        if not text or text.startswith("/"):
-            return
-
-        # @bot / @others 检查
+    async def _get_at_state(self, event: GroupMessageEvent) -> tuple[str, bool, bool]:
         bot_qq = await self._get_bot_qq()
         is_at_bot = False
         has_at_others = False
@@ -496,6 +482,64 @@ class QaHelperPlugin(NcatBotPlugin):
                     is_at_bot = True
                 elif qq:
                     has_at_others = True
+        return bot_qq, is_at_bot, has_at_others
+
+    async def _answer_general_ai(
+        self,
+        event: GroupMessageEvent,
+        question: str,
+        message_has_image: bool,
+        bot_qq: str,
+    ):
+        llm_cfg = load_llm_config()
+        if not llm_cfg.enabled:
+            return
+        if not is_llm_configured():
+            await event.reply("LLM 尚未配置，请联系管理员。")
+            return
+        if not question and not message_has_image:
+            await event.reply("请问具体问题是什么？")
+            return
+
+        question_for_answer = question
+        if message_has_image:
+            question_for_answer = await clean_message_for_llm(
+                event.message,
+                analyze_images=True,
+                image_hint=question,
+                tmp_dir=self.workspace / "vision_tmp",
+            )
+            question_for_answer = re.sub(rf"@?{re.escape(str(bot_qq))}", "", question_for_answer).strip()
+
+        messages = build_messages(llm_cfg.ai_system_prompt, [], question_for_answer or question)
+        answer = await get_llm().chat(messages, profile="answer")
+        if answer:
+            await event.reply(answer)
+        else:
+            await event.reply("抱歉，暂时无法回答这个问题。")
+
+    @on_message
+    async def _on_message(self, event):
+        if not isinstance(event, GroupMessageEvent):
+            return
+
+        group_id = str(event.group_id)
+        text = clean_plain_text(event.message)
+        if not text or text.startswith("/"):
+            return
+
+        # @bot / @others 检查
+        bot_qq, is_at_bot, has_at_others = await self._get_at_state(event)
+        cfg = self.groups.get(group_id)
+        if not cfg or not cfg.enabled:
+            if is_at_bot:
+                await self._answer_general_ai(
+                    event,
+                    self._clean_question(event),
+                    has_image(event.message),
+                    bot_qq,
+                )
+            return
 
         # 拉取上下文（@bot 与非 @bot 都带）
         ctx = ""

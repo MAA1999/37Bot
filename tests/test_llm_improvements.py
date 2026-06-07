@@ -26,6 +26,7 @@ if "ncatbot.utils" not in sys.modules:
     ncatbot.__path__ = []
     ncatbot_utils = types.ModuleType("ncatbot.utils")
     ncatbot_utils.get_log = lambda name: _Logger()
+    ncatbot_utils.ncatbot_config = types.SimpleNamespace(bt_uin="10000")
     sys.modules.setdefault("ncatbot", ncatbot)
     sys.modules.setdefault("ncatbot.utils", ncatbot_utils)
 if "ncatbot.plugin_system" not in sys.modules:
@@ -69,6 +70,7 @@ from plugins._ai.message import clean_plain_text, image_segment_to_url, local_im
 import plugins._ai as ai_shared
 import plugins._ai.config as ai_config
 from plugins._ai.config import normalize_openai_base_url
+import plugins.qa_helper.plugin as qa_plugin
 from plugins.sensitive_monitor.config import SensitiveGroupConfig
 from plugins.sensitive_monitor.plugin import SensitiveMonitorPlugin
 
@@ -108,6 +110,19 @@ class FakeSensitivePlugin(SensitiveMonitorPlugin):
     async def _build_context(self, *args, **kwargs):
         self.context_calls += 1
         return "context"
+
+
+class FakeGroupEvent(qa_plugin.GroupMessageEvent):
+    def __init__(self, message, group_id="1"):
+        self.group_id = group_id
+        self.user_id = "20000"
+        self.message_id = "m1"
+        self.time = 100
+        self.message = message
+        self.replies = []
+
+    async def reply(self, text):
+        self.replies.append(text)
 
 
 class LLMImprovementTests(unittest.TestCase):
@@ -239,6 +254,47 @@ class LLMImprovementTests(unittest.TestCase):
                 self.assertEqual(client.model, "vision-model")
             finally:
                 ai_config.SHARED_CONFIG_PATH = old_path
+
+    def test_qa_disabled_at_bot_uses_general_ai_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = qa_plugin.QaHelperPlugin.__new__(qa_plugin.QaHelperPlugin)
+            plugin.groups = {}
+            plugin._bot_qq = "10000"
+            plugin.workspace = Path(tmp)
+
+            old_get_llm = qa_plugin.get_llm
+            old_is_llm_configured = qa_plugin.is_llm_configured
+            old_load_llm_config = qa_plugin.load_llm_config
+            try:
+                qa_plugin.get_llm = lambda: FakeLLM("通用回复")
+                qa_plugin.is_llm_configured = lambda: True
+                qa_plugin.load_llm_config = lambda: ai_config.LLMConfig(
+                    base_url="https://example.com/v1",
+                    api_key="key",
+                    model="model",
+                )
+
+                event = FakeGroupEvent([
+                    FakeSeg("at", qq="10000"),
+                    FakeSeg("text", text=" 你好"),
+                ])
+                asyncio.run(plugin._on_message(event))
+                self.assertEqual(event.replies, ["通用回复"])
+            finally:
+                qa_plugin.get_llm = old_get_llm
+                qa_plugin.is_llm_configured = old_is_llm_configured
+                qa_plugin.load_llm_config = old_load_llm_config
+
+    def test_qa_disabled_without_at_bot_does_not_reply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = qa_plugin.QaHelperPlugin.__new__(qa_plugin.QaHelperPlugin)
+            plugin.groups = {}
+            plugin._bot_qq = "10000"
+            plugin.workspace = Path(tmp)
+
+            event = FakeGroupEvent([FakeSeg("text", text="你好")])
+            asyncio.run(plugin._on_message(event))
+            self.assertEqual(event.replies, [])
 
     def test_sensitive_context_not_built_when_unused(self):
         plugin = FakeSensitivePlugin()

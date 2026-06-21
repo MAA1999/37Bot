@@ -167,6 +167,7 @@ class ArkRecPlugin(NcatBotPlugin):
             json.dumps({gid: {
                 "enabled": s.enabled, "categories": s.categories,
                 "operators": s.operators, "operations": s.operations,
+                "exclude_categories": s.exclude_categories,
             } for gid, s in self.subs.items()}, ensure_ascii=False, indent=2),
             encoding="utf-8")
 
@@ -415,6 +416,10 @@ class ArkRecPlugin(NcatBotPlugin):
         team = json.loads(record.get("team_json", "[]"))
         op_names = [_team_member_name(t) for t in team]
         operation = record.get("operation", "")
+
+        for c in sub.exclude_categories:
+            if c in cats:
+                return False
 
         for c in sub.categories:
             if c in cats:
@@ -1922,6 +1927,28 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
 
         self._save_subscriptions()
 
+    @command_registry.command("arkrec_block", description="[管理员] 排除流派: <流派名>")
+    @param(name="value", default="", help="要排除的流派名")
+    async def cmd_block(self, event: GroupMessageEvent, value: str = ""):
+        if not await self._check_admin_or_root(event.group_id, event.user_id):
+            await event.reply("需要群主/管理员或 root 权限")
+            return
+        if not value:
+            await event.reply("用法: /arkrec_block <流派名>")
+            return
+        group_id = str(event.group_id)
+        sub = self._get_sub(group_id)
+        sub.enabled = True
+        val = value.strip()
+        resolved_category = self._resolve_category(val)
+        if not resolved_category:
+            await event.reply(f'未找到流派 "{val}"')
+            return
+        if resolved_category not in sub.exclude_categories:
+            sub.exclude_categories.append(resolved_category)
+        self._save_subscriptions()
+        await event.reply(f"已排除流派: {resolved_category}")
+
     @command_registry.command("arkrec_unsub", description="[管理员] 取消订阅")
     @param(name="value", default="", help="要取消的分类/干员/关卡，留空取消全部")
     async def cmd_unsub(self, event: GroupMessageEvent, value: str = ""):
@@ -1947,6 +1974,30 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
         self._save_subscriptions()
         await event.reply(f"已取消: {val}")
 
+    @command_registry.command("arkrec_unblock", description="[管理员] 取消排除流派")
+    @param(name="value", default="", help="要取消排除的流派，留空取消全部")
+    async def cmd_unblock(self, event: GroupMessageEvent, value: str = ""):
+        if not await self._check_admin_or_root(event.group_id, event.user_id):
+            await event.reply("需要群主/管理员或 root 权限")
+            return
+        group_id = str(event.group_id)
+        sub = self._get_sub(group_id)
+        if not value:
+            sub.exclude_categories.clear()
+            self._save_subscriptions()
+            await event.reply("已取消全部排除流派")
+            return
+        val = value.strip()
+        resolved_category = self._resolve_category(val)
+        candidates = {val}
+        if resolved_category:
+            candidates.add(resolved_category)
+        for candidate in list(candidates):
+            if candidate in sub.exclude_categories:
+                sub.exclude_categories.remove(candidate)
+        self._save_subscriptions()
+        await event.reply(f"已取消排除: {val}")
+
     @command_registry.command("arkrec_status", description="查看订阅状态和数据库统计")
     async def cmd_status(self, event: GroupMessageEvent):
         group_id = str(event.group_id)
@@ -1963,7 +2014,9 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
                 lines.append(f"  干员: {', '.join(sub.operators)}")
             if sub.operations:
                 lines.append(f"  关卡: {', '.join(sub.operations)}")
-            if not any([sub.categories, sub.operators, sub.operations]):
+            if sub.exclude_categories:
+                lines.append(f"  排除流派: {', '.join(sub.exclude_categories)}")
+            if not any([sub.categories, sub.operators, sub.operations, sub.exclude_categories]):
                 lines.append("  (未设置筛选条件)")
         await event.reply("\n".join(lines))
 

@@ -204,6 +204,9 @@ cython_debug/
 # Claude Code
 .claude/
 
+# OMO
+.sisyphus/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

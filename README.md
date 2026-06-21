@@ -68,6 +68,8 @@ uv run python main.py
   - 可加：`有记录`、`仅无记录`、`全部关卡`、`刷新`
 - `/arkrec_sub <分类/干员/关卡>`：\[管理员] 订阅推送
 - `/arkrec_unsub [值]`：\[管理员] 取消订阅（留空取消全部）
+- `/arkrec_block <流派>`：\[管理员] 排除流派（不推送该流派记录，无包含条件时推送其余全部）
+- `/arkrec_unblock [流派]`：\[管理员] 取消排除流派（留空取消全部排除）
 - `/arkrec_status`：查看订阅状态和数据库统计
 - `/arkrec_config <email> <password>`：\[root，私聊] 配置账号
 

@@ -17,3 +17,4 @@ class GroupSubscription:
     categories: list[str] = field(default_factory=list)
     operators: list[str] = field(default_factory=list)
     operations: list[str] = field(default_factory=list)
+    exclude_categories: list[str] = field(default_factory=list)

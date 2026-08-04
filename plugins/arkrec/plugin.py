@@ -81,6 +81,27 @@ def _team_member_name(member) -> str:
     return ""
 
 
+def _format_team_member(member) -> str:
+    """格式化干员显示：干员名+第几技能+模组代号（如果存在）
+    例如：麒麟R夜刀2X、予愿安洁莉娜3
+    """
+    if isinstance(member, str):
+        return member
+    if not isinstance(member, dict):
+        return ""
+    name = member.get("name", "")
+    if not name:
+        return ""
+    skill = member.get("skillStr", "")
+    result = name + str(skill) if skill else name
+    uniequip_type = member.get("uniequipType")
+    if uniequip_type and "-" in uniequip_type:
+        module_letter = uniequip_type.rsplit("-", 1)[-1]
+        if module_letter:
+            result += module_letter.upper()
+    return result
+
+
 class ArkRecPlugin(NcatBotPlugin):
     name = "ArkRecPlugin"
     version = "2.0.0"
@@ -435,7 +456,7 @@ class ArkRecPlugin(NcatBotPlugin):
     def _format_record(self, r: dict) -> str:
         team = json.loads(r.get("team_json", "[]"))
         cats = json.loads(r.get("category_json", "[]"))
-        names = ",".join(_team_member_name(t) for t in team)
+        names = ",".join(_format_team_member(t) for t in team)
         difficulty = self._record_difficulty_label(r) or "普通"
         return (
             f"新纪录: {r['operation']} {r['cn_name']} ({difficulty})\n"
@@ -461,7 +482,7 @@ class ArkRecPlugin(NcatBotPlugin):
             team = json.loads(r.get("team_json", "[]"))
             categories = json.loads(r.get("category_json", "[]"))
             names = "、".join(
-                _team_member_name(t) for t in team[:5] if _team_member_name(t)
+                _format_team_member(t) for t in team[:5] if _format_team_member(t)
             )
             difficulty = ArkRecPlugin._record_difficulty_label(r)
             badges = []
@@ -833,7 +854,7 @@ body {{
         show_old_tag: bool = False,
     ) -> str:
         team = json.loads(r["team_json"])
-        names = ",".join(_team_member_name(t) for t in team[:5])
+        names = ",".join(_format_team_member(t) for t in team[:5])
         cats = ",".join(json.loads(r["category_json"]))
         mode = self._record_difficulty_label(r)
         remark = r.get("remark1", "")
@@ -1706,7 +1727,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
         display_records = records[:20]
         for i, r in enumerate(display_records, 1):
             team = json.loads(r["team_json"])
-            names = ",".join(_team_member_name(t) for t in team[:5])
+            names = ",".join(_format_team_member(t) for t in team[:5])
             cats = ",".join(json.loads(r["category_json"]))
             lines.append(
                 f"\n[{i}] {r['operation']} {r['cn_name']} [{cats}]\n"

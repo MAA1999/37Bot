@@ -10,8 +10,15 @@ from ncatbot.plugin_system import NcatBotPlugin, command_registry, param
 from ncatbot.core.event import GroupMessageEvent, PrivateMessageEvent
 from ncatbot.utils import get_log
 
-from .config import MirrorConfig, GroupSubscription, ResourceConfig
-from .api import get_latest_version, download_resource
+from .config import (
+    MirrorConfig,
+    GroupSubscription,
+    ResourceConfig,
+    RESOURCE_TYPES,
+    TYPE_HINT,
+    resolve_type,
+)
+from .api import get_latest_version, download_resource, probe_ext
 
 logger = get_log("MirrorChyan")
 
@@ -34,6 +41,20 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
         # 启动定时检查
         self._start_check_tasks()
+
+    @staticmethod
+    def _type_name(resource_type) -> str:
+        """资源类型的显示名"""
+        return resolve_type(resource_type)[2]
+
+    @staticmethod
+    def _convert_type(value) -> int:
+        """把命令传来的资源类型转成 int；不认识的值返回 -1"""
+        try:
+            t = int(value)
+        except (TypeError, ValueError):
+            return -1
+        return t if t in RESOURCE_TYPES else -1
 
     async def _is_group_admin(self, group_id: str, user_id: str) -> bool:
         """检查用户是否是群主或管理员"""
@@ -198,13 +219,14 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
     async def _notify_update(self, group_id: str, res: ResourceConfig, data: dict):
         """发送更新通知"""
+        _, _, type_name, type_note = resolve_type(res.type)
         version = data.get('version_name', '')
         release_note = self._parse_release_note(data.get('release_note', ''))
 
         msg = (
-            f"📦 {res.rid} 更新 {version}\n"
+            f"📦 {res.rid} 更新 {version} ({type_name})\n"
             f"━━━━━━━━━━━━━━\n"
-            f"{release_note}"
+            f"{release_note}{type_note}"
         )
         await self.api.post_group_msg(group_id, text=msg)
 
@@ -255,13 +277,20 @@ class MirrorChyanPlugin(NcatBotPlugin):
             logger.error(f"检查文件是否存在失败: {e}")
         return False
 
+    @staticmethod
+    def _upload_ext(real_ext: str) -> str:
+        """上传群文件用的后缀：安卓包把 .apk 放大写绕过 QQ 拦截，其余用真实后缀"""
+        if real_ext.lower() == ".apk":
+            return ".APK"
+        return real_ext
+
     async def _auto_upload(self, group_id: str, res: ResourceConfig, data: dict):
         """自动下载并上传到群文件"""
-        type_name = "通用" if res.type == 0 else "win-x64"
-        filename = f"{res.rid}-{type_name}.zip"
-        save_path = str((self.data_dir / filename).resolve())
+        _, _, type_name, type_note = resolve_type(res.type)
+        ext = await probe_ext(data.get("url", ""))
+        save_path = str((self.data_dir / f"{res.rid}-{type_name}{ext}").resolve())
 
-        ok, err, _ = await download_resource(
+        ok, err, _, _ = await download_resource(
             res.rid, res.type, res.channel, self.mirror_config.cdk, save_path
         )
 
@@ -271,7 +300,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
         try:
             version = data.get("version_name", "")
-            upload_name = f"{res.rid}-{type_name}-{version}.zip"
+            upload_name = f"{res.rid}-{type_name}-{version}{self._upload_ext(ext)}"
             folder_id, folder_err = await self._get_or_create_folder(group_id, f"{res.rid}下载")
 
             if folder_err:
@@ -290,12 +319,12 @@ class MirrorChyanPlugin(NcatBotPlugin):
                     for delay in (10, 20, 30):
                         await asyncio.sleep(delay)
                         if await self._file_exists_in_folder(group_id, folder_id, upload_name):
-                            await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}")
+                            await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}{type_note}")
                             return
                     await self.api.post_group_msg(group_id, text=f"自动上传中: {upload_name}，请稍后检查群文件")
                     return
                 raise
-            await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}")
+            await self.api.post_group_msg(group_id, text=f"自动上传成功: {upload_name}{type_note}")
         except Exception as e:
             err_msg = str(e) or repr(e)
             await self.api.post_group_msg(group_id, text=f"自动上传失败: {type(e).__name__}: {err_msg}")
@@ -312,7 +341,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         return sub
 
     @command_registry.command("mirror_sub", description="[管理员] 订阅资源")
-    @param(name="type", default=1, help="类型 0通用/1跨平台")
+    @param(name="type", default=1, help=TYPE_HINT)
     @param(name="channel", default="stable", help="渠道 stable/beta/alpha")
     @param(name="interval", default=600, help="检查间隔(秒)")
     @param(name="auto", default=False, help="自动上传")
@@ -331,8 +360,9 @@ class MirrorChyanPlugin(NcatBotPlugin):
             return
 
         # 参数验证
-        if type not in (0, 1):
-            await event.reply("类型只能是 0(通用) 或 1(跨平台)")
+        type = self._convert_type(type)
+        if type < 0:
+            await event.reply(f"类型只能是 {TYPE_HINT}")
             return
         if channel not in ("stable", "beta", "alpha"):
             await event.reply("渠道只能是 stable/beta/alpha")
@@ -368,20 +398,24 @@ class MirrorChyanPlugin(NcatBotPlugin):
             f"{res.interval}s",
         )
 
-        type_name = "通用" if type == 0 else "跨平台"
+        type_name = self._type_name(type)
         auto_str = "是" if auto else "否"
         await event.reply(
             f"订阅成功: {rid} ({type_name}, {channel}, {interval}s, 自动上传:{auto_str})"
         )
 
     @command_registry.command("mirror_unsub", description="[管理员] 取消订阅")
-    @param(name="type", default=1, help="类型 0通用/1跨平台")
+    @param(name="type", default=1, help=TYPE_HINT)
     async def cmd_unsub(
         self, event: GroupMessageEvent, rid: str, type: int = 0
     ):
         """取消订阅"""
         if not await self._is_group_admin(event.group_id, event.user_id):
             await event.reply("需要管理员权限")
+            return
+        type = self._convert_type(type)
+        if type < 0:
+            await event.reply(f"类型只能是 {TYPE_HINT}")
             return
         group_id = str(event.group_id)
         for sub in self.mirror_config.subscriptions:
@@ -405,7 +439,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
             if sub.group_id == group_id and sub.resources:
                 lines = ["本群订阅:"]
                 for r in sub.resources:
-                    t = "通用" if r.type == 0 else "跨平台"
+                    t = self._type_name(r.type)
                     lines.append(f"  {r.rid} ({t}, {r.channel})")
                 await event.reply("\n".join(lines))
                 return
@@ -439,7 +473,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         await event.reply("本群暂无订阅")
 
     @command_registry.command("mirror_config", description="[管理员] 修改订阅配置")
-    @param(name="type", default=0, help="资源类型 0通用/1跨平台")
+    @param(name="type", default=0, help=TYPE_HINT)
     @param(name="interval", default=None, help="检查间隔(秒)")
     @param(name="auto", default=None, help="自动上传 true/false")
     @param(name="channel", default=None, help="渠道 stable/beta/alpha")
@@ -452,9 +486,14 @@ class MirrorChyanPlugin(NcatBotPlugin):
         auto: bool = None,
         channel: str = None,
     ):
-        """更新配置 用法: /mirror_config <资源ID> [类型0/1] [检查间隔秒] [自动上传]"""
+        """更新配置 用法: /mirror_config <资源ID> [类型] [检查间隔秒] [自动上传]"""
         if not await self._is_group_admin(event.group_id, event.user_id):
             await event.reply("需要管理员权限")
+            return
+
+        type = self._convert_type(type)
+        if type < 0:
+            await event.reply(f"类型只能是 {TYPE_HINT}")
             return
 
         group_id = str(event.group_id)
@@ -493,7 +532,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         await event.reply(f"未找到订阅: {rid}")
 
     @command_registry.command("mirror_download", description="[管理员] 下载资源到群文件")
-    @param(name="type", default=1, help="类型 0通用/1跨平台")
+    @param(name="type", default=1, help=TYPE_HINT)
     @param(name="channel", default="stable", help="渠道 stable/beta/alpha")
     async def cmd_download(
         self,
@@ -508,8 +547,9 @@ class MirrorChyanPlugin(NcatBotPlugin):
             return
 
         # 参数验证
-        if type not in (0, 1):
-            await event.reply("类型只能是 0(通用) 或 1(跨平台)")
+        type = self._convert_type(type)
+        if type < 0:
+            await event.reply(f"类型只能是 {TYPE_HINT}")
             return
         if channel not in ("stable", "beta", "alpha"):
             await event.reply("渠道只能是 stable/beta/alpha")
@@ -521,12 +561,18 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
         await event.reply(f"开始下载 {rid}...")
 
-        # 下载文件
-        type_name = "通用" if type == 0 else "win-x64"
-        filename = f"{rid}-{type_name}.zip"
-        save_path = str((self.data_dir / filename).resolve())
+        # 先取真实文件名，拿到权威后缀（linux 是 .tar.gz、macOS 是 .dmg，不能按平台写死）
+        latest = await get_latest_version(rid, type, channel, self.mirror_config.cdk)
+        if not latest or not latest.get("url"):
+            await event.reply("获取下载信息失败: 资源不存在，或该渠道没有这个平台的包")
+            return
+        ext = await probe_ext(latest["url"])
 
-        ok, msg, data = await download_resource(
+        # 下载文件
+        _, _, type_name, type_note = resolve_type(type)
+        save_path = str((self.data_dir / f"{rid}-{type_name}{ext}").resolve())
+
+        ok, msg, data, _ = await download_resource(
             rid, type, channel, self.mirror_config.cdk, save_path
         )
 
@@ -541,7 +587,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
         # 上传到群文件
         try:
             version = data.get("version_name", "")
-            upload_name = f"{rid}-{type_name}-{version}.zip"
+            upload_name = f"{rid}-{type_name}-{version}{self._upload_ext(ext)}"
             folder_id, folder_err = await self._get_or_create_folder(str(event.group_id), f"{rid}下载")
 
             if folder_err:
@@ -553,7 +599,7 @@ class MirrorChyanPlugin(NcatBotPlugin):
                 return
 
             await self.api.upload_group_file(event.group_id, save_path, upload_name, folder=folder_id)
-            await event.reply(f"上传成功: {upload_name}")
+            await event.reply(f"上传成功: {upload_name}{type_note}")
         except Exception as e:
             await event.reply(f"上传失败: {e}")
 

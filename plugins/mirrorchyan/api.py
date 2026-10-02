@@ -1,9 +1,12 @@
 """Mirror API 请求"""
 
 import hashlib
+import urllib.parse
 from pathlib import Path
 from typing import Optional, Tuple
 import httpx
+
+from .config import resolve_type
 
 API_BASE = "https://mirrorchyan.com/api/resources"
 USER_AGENT = "37Bot"
@@ -32,6 +35,55 @@ def _calc_sha256(file_path: str) -> str:
     return h.hexdigest()
 
 
+def _build_params(
+    resource_id: str, resource_type: int, channel: str, cdk: str = ""
+) -> dict:
+    """拼装请求参数，os/arch 由资源类型决定（见 config.RESOURCE_TYPES）"""
+    os_name, arch, _, _ = resolve_type(resource_type)
+    params = {
+        "channel": channel,
+        "user_agent": USER_AGENT,
+    }
+    if os_name:
+        params["os"] = os_name
+    if arch:
+        params["arch"] = arch
+    if cdk:
+        params["cdk"] = cdk
+    return params
+
+
+def _ext_from_url(url: str) -> str:
+    """从下载 URL 推导文件后缀，取不到返回空串
+
+    MirrorChyan 的下载链接是 302 到
+    https://download2.mirrorchyan.com/<rid>/<ver>/<os>-<arch>/<真实文件名>
+    真实文件名带的才是权威后缀：linux 是 resource.tar.gz、windows 是 resource.zip、
+    macOS 是 <rid>-<ver>-macos-<arch>.dmg，按平台写死会错。
+    """
+    name = urllib.parse.urlparse(url or "").path.rsplit("/", 1)[-1]
+    lower = name.lower()
+    for ext in (".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tgz", ".apk", ".dmg", ".zip", ".7z", ".exe"):
+        if lower.endswith(ext):
+            return name[len(name) - len(ext):]
+    return ""
+
+
+async def probe_ext(url: str) -> str:
+    """按 302 跳转的目标文件名推导后缀；拿不到就退回 API 给的 URL 本身"""
+    ext = _ext_from_url(url)
+    if ext:
+        return ext
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, timeout=30, follow_redirects=False)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                return _ext_from_url(resp.headers.get("location", ""))
+    except Exception:
+        pass
+    return ""
+
+
 async def get_latest_version(
     resource_id: str, resource_type: int, channel: str = "stable", cdk: str = ""
 ) -> Optional[dict]:
@@ -40,7 +92,7 @@ async def get_latest_version(
 
     Args:
         resource_id: 资源ID
-        resource_type: 0=通用, 1=跨平台(win-x64)
+        resource_type: 见 config.RESOURCE_TYPES
         channel: stable | beta | alpha
         cdk: CDK密钥
 
@@ -48,15 +100,7 @@ async def get_latest_version(
         API返回的data字段，失败返回None
     """
     url = f"{API_BASE}/{resource_id}/latest"
-    params = {
-        "channel": channel,
-        "user_agent": USER_AGENT,
-    }
-    if resource_type == 1:
-        params["os"] = "win"
-        params["arch"] = "x64"
-    if cdk:
-        params["cdk"] = cdk
+    params = _build_params(resource_id, resource_type, channel, cdk)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -71,22 +115,15 @@ async def get_latest_version(
 
 async def download_resource(
     resource_id: str, resource_type: int, channel: str, cdk: str, save_path: str
-) -> Tuple[bool, str, Optional[dict]]:
+) -> Tuple[bool, str, Optional[dict], str]:
     """
     下载资源文件（带hash检测）
 
     Returns:
-        (成功, 错误信息/状态信息, 版本信息)
+        (成功, 错误信息/状态信息, 版本信息, 真实文件后缀)
     """
     url = f"{API_BASE}/{resource_id}/latest"
-    params = {
-        "channel": channel,
-        "user_agent": USER_AGENT,
-        "cdk": cdk,
-    }
-    if resource_type == 1:
-        params["os"] = "win"
-        params["arch"] = "x64"
+    params = _build_params(resource_id, resource_type, channel, cdk)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -96,23 +133,24 @@ async def download_resource(
 
             if code != 0:
                 err_msg = ERROR_MESSAGES.get(code, result.get("msg", "未知错误"))
-                return False, err_msg, None
+                return False, err_msg, None, ""
             if "url" not in result.get("data", {}):
-                return False, "无下载链接", None
+                return False, "无下载链接", None, ""
 
             data = result["data"]
             expected_sha256 = data.get("sha256", "")
+            ext = await probe_ext(data["url"])
 
             # 下载前检测：本地文件已存在且hash匹配则跳过
             if expected_sha256 and Path(save_path).exists():
                 local_hash = _calc_sha256(save_path)
                 if local_hash == expected_sha256:
-                    return True, "文件已存在且hash匹配，跳过下载", data
+                    return True, "文件已存在且hash匹配，跳过下载", data, ext
 
             # 流式下载
             async with client.stream("GET", data["url"], timeout=600, follow_redirects=True) as dl_resp:
                 if dl_resp.status_code != 200:
-                    return False, f"下载失败: {dl_resp.status_code}", None
+                    return False, f"下载失败: {dl_resp.status_code}", None, ext
                 with open(save_path, "wb") as f:
                     async for chunk in dl_resp.aiter_bytes(chunk_size=8192):
                         f.write(chunk)
@@ -122,8 +160,8 @@ async def download_resource(
                 actual_hash = _calc_sha256(save_path)
                 if actual_hash != expected_sha256:
                     Path(save_path).unlink(missing_ok=True)
-                    return False, f"hash校验失败: 期望{expected_sha256[:16]}... 实际{actual_hash[:16]}...", None
+                    return False, f"hash校验失败: 期望{expected_sha256[:16]}... 实际{actual_hash[:16]}...", None, ext
 
-            return True, "", data
+            return True, "", data, ext
     except Exception as e:
-        return False, str(e), None
+        return False, str(e), None, ""

@@ -55,7 +55,7 @@ class HelpPlugin(NcatBotPlugin):
         "groupsummary": "/summary 300\n/summary_on\n/summary_status",
         "qahelper": "/qa on M9A\n/qa_status\n/qa_refresh",
         "groupadmin": "/ga_enable\n/ga_status",
-        "mirrorchyan": "/mirror_sub MAA-v5.0.0\n/mirror_list",
+        "mirrorchyan": "/mirror_sub MAA-v5.0.0\n/mirror_list\n/mirror_download M9A_exec --type=2\n  (安卓包改 .APK 后缀，下载后需改回 .apk)",
     }
 
     def _get_plugin_display_name(self, plugin_name: str) -> str:

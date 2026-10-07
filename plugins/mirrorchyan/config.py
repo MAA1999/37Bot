@@ -10,25 +10,27 @@ from dataclasses import dataclass, field
 #   MaaEnd    = 桌面(win/linux)   MaaEnd_exec  = macOS + 安卓(仅 beta/alpha)
 # 所以平台必须由调用方按类型显式指定。
 #
+# 显示名就是 os-arch（windows 按惯例缩写成 win），直接用于保存名和上传名。
+#
 # 这里不记文件后缀：同一个平台后缀并不固定（linux 是 .tar.gz，macos 是 .dmg，
 # windows 是 .zip），一律从下载 URL 推导，见 api.probe_ext。
 RESOURCE_TYPES = {
     0: (None, None, "通用", ""),
-    1: ("windows", "x64", "跨平台", ""),
-    2: ("android", "any", "安卓通用", "，下载后请改回 .apk 再安装"),
-    3: ("android", "arm64", "安卓arm64", "，下载后请改回 .apk 再安装"),
-    4: ("android", "x64", "安卓x86_64", "，下载后请改回 .apk 再安装"),
-    5: ("macos", "arm64", "macOS-arm64", ""),
-    6: ("macos", "x64", "macOS-x86_64", ""),
-    7: ("linux", "x64", "Linux-x86_64", ""),
-    8: ("linux", "arm64", "Linux-arm64", ""),
-    9: ("windows", "arm64", "Windows-arm64", ""),
+    1: ("windows", "x64", "win-x64", ""),
+    2: ("android", "any", "android-any", "，下载后请改回 .apk 再安装"),
+    3: ("android", "arm64", "android-arm64", "，下载后请改回 .apk 再安装"),
+    4: ("android", "x64", "android-x64", "，下载后请改回 .apk 再安装"),
+    5: ("macos", "arm64", "macos-arm64", ""),
+    6: ("macos", "x64", "macos-x64", ""),
+    7: ("linux", "x64", "linux-x64", ""),
+    8: ("linux", "arm64", "linux-arm64", ""),
+    9: ("windows", "arm64", "win-arm64", ""),
 }
 
 # 类型参数的帮助文本，命令声明与校验失败提示共用
 TYPE_HINT = (
-    "资源类型 0通用/1跨平台/2安卓通用/3安卓arm64/4安卓x86_64"
-    "/5macOS-arm64/6macOS-x86_64/7Linux-x86_64/8Linux-arm64/9Windows-arm64"
+    "资源类型 0通用/1win-x64/2android-any/3android-arm64/4android-x64"
+    "/5macos-arm64/6macos-x64/7linux-x64/8linux-arm64/9win-arm64"
 )
 
 

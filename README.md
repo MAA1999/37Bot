@@ -40,22 +40,6 @@ uv run python main.py
 - `/help <模块>`：显示模块命令
 - `/status`：查询服务器状态（CPU、内存、Swap、磁盘、运行时间）
 
-### LLM / Agnes
-
-- `/qa_llm <base_url> <api_key> <model>`：\[root，私聊] 配置全局 OpenAI 兼容 LLM。所有 LLM 插件共享这份配置。
-- `/sensitive_llm <base_url> <api_key> <model>`：\[root，私聊] 同样写入全局 LLM 配置，可任选其一使用。
-- `/llm_vision <base_url> <api_key> <model>`：\[root，私聊] 可选，配置单独的多模态模型。
-- `/llm_backup add <base_url> <api_key> <model>`：添加备用文本模型。
-- `/llm_vision_backup add <base_url> <api_key> <model>`：添加备用多模态模型。
-- `/llm_health`：查看主模型和备用模型健康状态。
-
-说明：
-
-- `base_url` 填 OpenAI 兼容接口前缀。如果官方文档给的是 `https://example.com/v1/chat/completions`，这里填 `https://example.com/v1`。
-- Agnes 2.0 Flash 这类全模态模型可以只用 `/qa_llm` 配一次；未单独配置 `/llm_vision` 时，图片分析会自动复用主模型。
-- 配置后会写入 `data/_ai/llm_config.json`，生效范围包括 AI 问答、Q&A 助手、群聊总结、敏感监测和图片分析。
-- Agnes-2.0-Flash 示例：`/qa_llm https://apihub.agnes-ai.com/v1 YOUR_API_KEY agnes-2.0-flash`。如果误填完整 endpoint `https://apihub.agnes-ai.com/v1/chat/completions`，程序会自动规范化为 `https://apihub.agnes-ai.com/v1`。
-
 ### ArkRec（明日方舟少人 Wiki）
 
 - `/arkrec [关卡] [分类] [干员]`：查询记录（默认常规队当前纪录）
@@ -96,23 +80,22 @@ uv run python main.py
 - 日志会记录 `uid`、所属 QQ、token 指纹、设备 ID、接口阶段、角色签到结果和耗时，便于排查；不会记录明文 token。
 - 森空岛 API 签名算法参考了 [YueHen14/skyland-auto-sign](https://github.com/YueHen14/skyland-auto-sign) 和 [UKMeng/nonebot-plugin-skland-arksign](https://github.com/UKMeng/nonebot-plugin-skland-arksign)。
 
-### 群聊总结
-
-- `/summary [消息数|today|YYYY-MM-DD]`：生成群聊总结
-- `/summary_on`：\[管理员] 开启每日定时总结
-- `/summary_off`：\[管理员] 关闭每日定时总结
-- `/summary_time <0-23>`：\[管理员] 设置定时小时
-- `/summary_count <20-2000>`：\[管理员] 设置总结消息条数
-- `/summary_track on/off`：\[管理员] 开关问题追踪
-- `/summary_status`：查看本群总结配置
-
-说明：定时总结使用框架定时任务，每 300 秒检查一次，命中设定小时的前 10 分钟窗口执行。
-
 ### Mirror酱
 
-- `/mc_cdk <rid> <cdk>`：绑定 CDK
-- `/mc_download <rid>`：下载资源
-- `/mc_upload <rid>`：上传资源（回复文件消息）
+- `/mirror_sub <rid> [类型] [渠道] [间隔秒] [自动上传]`：\[管理员] 订阅资源更新
+- `/mirror_unsub <rid> [类型]`：\[管理员] 取消订阅
+- `/mirror_list`：查看本群订阅
+- `/mirror_check [rid] [force]`：\[管理员] 立即检查更新（force 强制显示更新信息）
+- `/mirror_config <rid> [类型] [间隔秒] [自动上传] [渠道]`：\[管理员] 修改订阅配置
+- `/mirror_download <rid> [类型] [渠道]`：\[管理员] 下载最新版并上传群文件
+- `/mirror_cdk <cdk>`：\[root，私聊] 设置 CDK
+
+说明：
+
+- 类型即平台包：0通用/1win-x64/2android-any/3android-arm64/4android-x64/5macos-arm64/6macos-x64/7linux-x64/8linux-arm64/9win-arm64。
+- 渠道 stable/beta/alpha；检查间隔至少 60 秒，默认 600 秒。
+- 开启自动上传后，新版本自动下载并上传到群文件「{rid}下载」文件夹，文件名形如 `M9A-win-x64-v4.11.2.zip`、`MaaEnd_exec-android-any-v2.32.0-beta.4.APK`（安卓包后缀大写绕过 QQ 拦截）。
+- 未设置 CDK 时只发更新通知，不自动上传。
 
 ### 群管
 
@@ -137,14 +120,10 @@ uv run python main.py
 ├── config.yaml
 ├── config.yaml.example
 ├── plugins/
-│   ├── _ai/
 │   ├── arkrec/
-│   ├── group_summary/
 │   ├── groupadmin/
 │   ├── help/
 │   ├── mirrorchyan/
-│   ├── qa_helper/
-│   ├── sensitive_monitor/
 │   ├── skland/
 │   ├── status/
 │   └── todo/

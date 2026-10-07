@@ -18,7 +18,7 @@ from .config import (
     TYPE_HINT,
     resolve_type,
 )
-from .api import get_latest_version, download_resource, probe_ext
+from .api import get_latest_version, download_resource, probe_ext, apply_ext
 
 logger = get_log("MirrorChyan")
 
@@ -287,16 +287,21 @@ class MirrorChyanPlugin(NcatBotPlugin):
     async def _auto_upload(self, group_id: str, res: ResourceConfig, data: dict):
         """自动下载并上传到群文件"""
         _, _, type_name, type_note = resolve_type(res.type)
-        ext = await probe_ext(data.get("url", ""))
-        save_path = str((self.data_dir / f"{res.rid}-{type_name}{ext}").resolve())
+        # data 来自不带 CDK 的版本查询，里面没有 url，不能在这里探测后缀；
+        # 权威后缀由 download_resource 用带 CDK 的下载链接探测后返回
+        save_path = str((self.data_dir / f"{res.rid}-{type_name}").resolve())
 
-        ok, err, _, _ = await download_resource(
+        ok, err, dl_data, ext = await download_resource(
             res.rid, res.type, res.channel, self.mirror_config.cdk, save_path
         )
 
         if not ok:
             await self.api.post_group_msg(group_id, text=f"自动下载失败: {err}")
             return
+
+        save_path = apply_ext(save_path, ext)
+        if dl_data:
+            data = dl_data
 
         try:
             version = data.get("version_name", "")
@@ -561,24 +566,27 @@ class MirrorChyanPlugin(NcatBotPlugin):
 
         await event.reply(f"开始下载 {rid}...")
 
-        # 先取真实文件名，拿到权威后缀（linux 是 .tar.gz、macOS 是 .dmg，不能按平台写死）
+        # 先取真实文件名，拿到预估后缀（linux 是 .tar.gz、macOS 是 .dmg，不能按平台写死）
         latest = await get_latest_version(rid, type, channel, self.mirror_config.cdk)
         if not latest or not latest.get("url"):
             await event.reply("获取下载信息失败: 资源不存在，或该渠道没有这个平台的包")
             return
         ext = await probe_ext(latest["url"])
 
-        # 下载文件
+        # 下载文件（download_resource 会再探测一次权威后缀并返回，以它为准）
         _, _, type_name, type_note = resolve_type(type)
         save_path = str((self.data_dir / f"{rid}-{type_name}{ext}").resolve())
 
-        ok, msg, data, _ = await download_resource(
+        ok, msg, data, real_ext = await download_resource(
             rid, type, channel, self.mirror_config.cdk, save_path
         )
 
         if not ok:
             await event.reply(f"下载失败: {msg}")
             return
+
+        ext = real_ext or ext
+        save_path = apply_ext(save_path, ext)
 
         # 提示跳过下载或下载完成
         if msg:

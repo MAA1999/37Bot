@@ -84,6 +84,17 @@ async def probe_ext(url: str) -> str:
     return ""
 
 
+def apply_ext(path: str, ext: str) -> str:
+    """把探测到的真实后缀补到保存路径末尾；已有等价后缀（不分大小写）则原样返回
+
+    调用方拿到的后缀来自 download_resource 的权威探测，可能与调用方自己
+    预估的不一致（大小写不同或没探测到），统一在这里对齐。
+    """
+    if ext and not path.lower().endswith(ext.lower()):
+        return path + ext
+    return path
+
+
 async def get_latest_version(
     resource_id: str, resource_type: int, channel: str = "stable", cdk: str = ""
 ) -> Optional[dict]:
@@ -140,6 +151,9 @@ async def download_resource(
             data = result["data"]
             expected_sha256 = data.get("sha256", "")
             ext = await probe_ext(data["url"])
+            # 调用方拼保存名时不一定拿得到下载 URL（无 CDK 的 /latest 不返回 url），
+            # 探测可能失败；这里用带 CDK 的 URL 再探测一次，并补全后缀
+            save_path = apply_ext(save_path, ext)
 
             # 下载前检测：本地文件已存在且hash匹配则跳过
             if expected_sha256 and Path(save_path).exists():

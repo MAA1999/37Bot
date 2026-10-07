@@ -219,3 +219,6 @@ config.yaml
 .vscode/sftp.json
 
 docs/
+
+# Bot runtime logs
+logs/

@@ -482,7 +482,7 @@ class ArkRecPlugin(NcatBotPlugin):
             team = json.loads(r.get("team_json", "[]"))
             categories = json.loads(r.get("category_json", "[]"))
             names = "、".join(
-                _format_team_member(t) for t in team[:5] if _format_team_member(t)
+                _format_team_member(t) for t in team if _format_team_member(t)
             )
             difficulty = ArkRecPlugin._record_difficulty_label(r)
             badges = []
@@ -854,7 +854,7 @@ body {{
         show_old_tag: bool = False,
     ) -> str:
         team = json.loads(r["team_json"])
-        names = ",".join(_format_team_member(t) for t in team[:5])
+        names = ",".join(_format_team_member(t) for t in team)
         cats = ",".join(json.loads(r["category_json"]))
         mode = self._record_difficulty_label(r)
         remark = r.get("remark1", "")
@@ -1727,7 +1727,7 @@ td {{ padding: 10px 12px; border-top: 1px solid #edf0f5; vertical-align: middle;
         display_records = records[:20]
         for i, r in enumerate(display_records, 1):
             team = json.loads(r["team_json"])
-            names = ",".join(_format_team_member(t) for t in team[:5])
+            names = ",".join(_format_team_member(t) for t in team)
             cats = ",".join(json.loads(r["category_json"]))
             lines.append(
                 f"\n[{i}] {r['operation']} {r['cn_name']} [{cats}]\n"

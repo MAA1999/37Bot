@@ -3,6 +3,7 @@
 
 docker run -d \
   -e NAPCAT_GID=$(id -g) \
+  -e ACCOUNT=1057521489 \
   -e NAPCAT_UID=$(id -u) \
   -p 3000:3000 \
   -p 3001:3001 \

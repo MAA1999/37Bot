@@ -1,0 +1,8 @@
+[Unit]
+Description=NapCat QQ offline watchdog
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/37Bot/.venv/bin/python /home/37Bot/scripts/napcat_watchdog.py
